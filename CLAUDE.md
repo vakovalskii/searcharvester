@@ -1,78 +1,98 @@
 # CLAUDE.md
 
-Эти заметки нужны, чтобы будущий Claude (или новый разработчик) быстро ориентировался в репозитории.
+Заметки для будущего Claude (или нового разработчика). Цель — быстро сориентироваться, не перечитывая всю историю.
 
 ## Что это за проект
 
-**Searcharvester** — Docker Compose стек, который поднимает **SearXNG** (мета-поисковик) и **FastAPI-адаптер** с trafilatura для извлечения markdown. API частично совместим с [Tavily](https://tavily.com) (через `/search`), плюс собственный `/extract` с пресетами размера и пагинацией. Smысл: drop-in замена платного Tavily + инструмент для AI-агентов «собрать урожай с интернета». Подробности в `README.md` и `docs/`.
+**Searcharvester 2.1.0** — self-hosted стек из трёх HTTP-сервисов и deep-research агента:
 
-Образ опубликован в GHCR: `ghcr.io/vakovalskii/searcharvester:latest`. В `docker-compose.yaml` по умолчанию используется `image:`, но секция `build:` сохранена — `docker compose up --build` пересобирает локально.
+- `POST /search` — Tavily-совместимый поиск через SearXNG (100+ движков)
+- `POST /extract` — URL → markdown через trafilatura, пресеты `s/m/l/f` + пагинация
+- `POST /research` — deep research: спавнит эфемерный Hermes-контейнер, возвращает цитируемый markdown-отчёт
+
+Примарно — английский README и документация (3 языка в `docs/`). Переписка со мной обычно на русском, но код-комментарии и доки англоязычные.
+
+Pre-built образ в GHCR: `ghcr.io/vakovalskii/searcharvester:{latest,2.1.0}`.
 
 ## Устройство репозитория
 
 | Путь | Что это |
 |---|---|
-| `docker-compose.yaml` | оркестрация: `redis` (valkey), `searxng`, `tavily-adapter` |
-| `config.example.yaml` | шаблон единого конфига (и SearXNG, и адаптера) |
-| `config.yaml` | **gitignored**, создаётся из шаблона; монтируется в оба сервиса |
-| `simple_tavily_adapter/` | исходники адаптера (FastAPI + aiohttp + BeautifulSoup) |
-| `searxng/limiter.toml` | настройки лимитера SearXNG (сейчас не монтируется в compose — артефакт) |
-| `Caddyfile` | конфиг Caddy для HTTPS-фронта; **не подключён** к compose, остался от upstream |
-| `.env` | placeholders для `SEARXNG_HOSTNAME` / `LETSENCRYPT_EMAIL`, текущим compose не читаются |
-| `searxng-docker.service.template` | systemd unit для Linux-хоста |
-| `docs/` | подробная документация + C4-диаграммы |
+| `docker-compose.yaml` | 4 always-on сервиса: `redis`, `searxng`, `docker-socket-proxy`, `tavily-adapter` (+ эфемерный `hermes-agent` спавнится на `/research`) |
+| `config.yaml` | **gitignored**, создаётся из `config.example.yaml`; монтируется в SearXNG + адаптер |
+| `simple_tavily_adapter/` | исходники адаптера (FastAPI + trafilatura + docker-py) |
+| `simple_tavily_adapter/main.py` | роуты `/search`, `/extract`, `/research*`, `/health` |
+| `simple_tavily_adapter/orchestrator.py` | лайфсайкл research-job: spawn / watch / timeout / cancel / cleanup |
+| `simple_tavily_adapter/tests/` | unit + API тесты (19 штук), запекаются в образ |
+| `hermes_skills/` | три наших skill'а в `agentskills.io` формате: search, extract, deep-research |
+| `hermes-data/` | **gitignored**, volume для Hermes — туда синкаются наши skills |
+| `jobs/` | **gitignored**, workspace каждой research-задачи (plan.md, notes.md, report.md, hermes.log) |
+| `bench/` | SimpleQA-20 smoke-бенч и харнесс |
+| `docs/{en,ru,zh}/` | документация на 3 языках + C4-диаграммы |
+| `Caddyfile`, `.env`, `searxng-docker.service.template`, `searxng/limiter.toml` | остатки от upstream searxng-docker, compose их не читает |
 
-## Адаптер в двух словах
+## Архитектура `/research` (ядро новой версии)
 
-- `simple_tavily_adapter/main.py` — FastAPI, эндпойнты:
-  - `POST /search` — Tavily-совместимый поиск + опциональные `engines`, `categories`, markdown `raw_content` через trafilatura
-  - `POST /extract` — извлечение страницы в markdown через trafilatura. Пресеты `size`: `s` (5k), `m` (10k), `l` (25k), `f` (полный с пагинацией по 25k)
-  - `GET /extract/{id}/{page}` — следующие страницы (для `size=f`). In-memory кеш с TTL 30 мин, keyed by `md5(url)[:16]`
-  - `GET /health`
-- `simple_tavily_adapter/tavily_client.py` — Python-класс `TavilyClient` для in-process использования. **Пока не знает про trafilatura и новые поля** — отстаёт от `main.py`, см. «шероховатости».
-- `simple_tavily_adapter/config_loader.py` — читает `config.yaml` по пути `/srv/searxng-docker/config.yaml` (путь монтирования в контейнере). Есть fallback на дефолты если файла нет.
-- Поток `/search`: клиент → POST к SearXNG `/search?format=json&engines=...&categories=...` → (опц.) параллельный fetch URL-ов через aiohttp → trafilatura → ответ в формате Tavily.
-- Поток `/extract`: клиент → fetch URL → trafilatura.extract(output_format='markdown') → кеш → нарезка по size → ответ.
+Поток:
 
-## Как запускать
+1. `POST /research {query}` → адаптер генерирует `job_id`, создаёт `jobs/{job_id}/`
+2. Оркестратор через **docker-socket-proxy** шлёт `containers/create` в Docker daemon
+3. Docker поднимает эфемерный `nousresearch/hermes-agent` контейнер:
+   - volume `./hermes-data` → `/opt/data` (скиллы + конфиг Hermes)
+   - volume `./jobs/{id}` → `/workspace` (куда агент пишет артефакты)
+   - env: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `SEARCHARVESTER_URL=http://host.docker.internal:8000`
+   - CLI: `chat -Q -q "<query + mandatory contract suffix>" -s <skills> -t terminal --yolo --max-turns 30`
+4. Оркестратор (asyncio task) ждёт `container.wait()` с таймаутом
+5. По выходу читает логи, ищет маркер `REPORT_SAVED:`, если есть + `report.md` существует → `status=completed`
+6. Контейнер удаляется (`container.remove(force=True)`), его ресурсы освобождаются
+
+Ключевые моменты:
+
+- **docker-socket-proxy** — whitelist'ит Docker API (`CONTAINERS=1 POST=1 IMAGES=1`, остальное 0). Адаптер ходит по `DOCKER_HOST=tcp://docker-socket-proxy:2375`, **не** касаясь `/var/run/docker.sock` напрямую. При компрометации адаптера получишь только create/start/kill/rm, не системный доступ.
+- **Mandatory contract**: оркестратор добавляет к каждому query `MANDATORY_SUFFIX` — жёсткое требование «сохрани в `/workspace/report.md` + напечатай `REPORT_SAVED:`». Без него gpt-oss-120b для простых вопросов «срезает» методологию и отвечает прямо в stdout.
+- **Host vs container paths**: в оркестраторе есть `jobs_dir` (внутри адаптера, для `mkdir` и чтения report.md) и `jobs_host_dir` (путь как видит Docker daemon на хосте, для bind-mount). Аналогично для hermes-data. **Не путать** — я уже один раз наступил на это.
+- **LLM-агностик**: `provider: "custom"` в `hermes-data/config.yaml` + `OPENAI_BASE_URL` + `OPENAI_API_KEY`. Это единственный правильный путь для vLLM / локальных endpoint'ов — `provider: "vllm"` из доков упоминается, но на рантайме enum не принимает.
+
+## Skills — три штуки
+
+- `searcharvester-search/` — SKILL.md + `scripts/search.py`. Зовёт `/search` через `urllib`, возвращает компактный JSON без лишних полей.
+- `searcharvester-extract/` — SKILL.md + `scripts/extract.py`. Зовёт `/extract` и `/extract/{id}/{page}`, отдаёт markdown + метаданные.
+- `searcharvester-deep-research/` — **только SKILL.md, без кода**. Методология на ~200 строк: план → gather → gap-check → synthesise → verify. Скилл просто _описывает_ процесс для LLM; реальные tool-вызовы уже есть в первых двух скиллах.
+
+Скиллы синкаются в `hermes-data/skills/` перед спавном. Формат переносимый ([agentskills.io](https://agentskills.io)) — те же скиллы работают в Claude Code, Cursor, OpenCode.
+
+## Тесты
+
+Написаны TDD-стилем (тесты раньше кода).
+
+- `tests/test_orchestrator.py` — 12 unit-тестов с `FakeDockerClient` (fake Docker SDK). Покрывают: spawn, workspace mkdir, volume mounts, start failure, watch/logs parsing, timeout+kill, cancel, параллельные spawn'ы.
+- `tests/test_research_api.py` — 7 FastAPI route-тестов с моком оркестратора. Покрывают: валидация query, статусы, отсутствие report на running, cancel.
+- `tests/test_e2e.py` — интеграционный тест, gated через `RUN_E2E=1`. Реальный Hermes + vLLM.
+
+Запуск быстро (всё запечено в образ):
 
 ```bash
-cp config.example.yaml config.yaml        # один раз, перед первым стартом
-# отредактируй server.secret_key (>= 32 символа)
-docker compose up -d
-curl -X POST localhost:8000/search -H 'Content-Type: application/json' \
-  -d '{"query":"test","max_results":3}'
+docker compose exec tavily-adapter pytest -q        # unit + API, 19/19 за ~3с
+RUN_E2E=1 pytest tests/test_e2e.py -v               # E2E, ~1-2 минуты
 ```
 
-Порты на хосте: **8000** — адаптер, **8999** — SearXNG UI/API. Redis только во внутренней docker-сети.
+## Известные шероховатости
 
-Локальная разработка адаптера без Docker:
+- **`score` результата `/search` — фейковый** (`0.9 - i*0.05`). Не настоящая релевантность.
+- **`/extract` кеш — в памяти, TTL 30 мин.** После рестарта `tavily-adapter` старые `id` инвалидны → клиент должен повторить `POST /extract`. Осознанно, без SQLite/Redis ради простоты.
+- **`tavily_client.py` отстал от `main.py`** — там BeautifulSoup-скрапинг и нет `/extract` логики. Либо синхронизируй, либо удали (HTTP API всё покрывает).
+- **`hermes_skills/` vs `hermes-data/skills/`** — source в первом, mount во втором. При правке скилла **надо копировать** в `hermes-data/skills/` (или пересоздать volume). TODO: автоматический sync в оркестраторе при старте.
+- **`Caddyfile` не подключён** к compose — если нужен HTTPS, добавь сервис вручную.
+- **`limiter: false`** в `config.yaml` — SearXNG без анти-бот защиты. Ок для локалки, не ок для публичного endpoint'а.
 
-```bash
-cd simple_tavily_adapter
-pip install -r requirements.txt
-# SearXNG должен быть доступен; для локала поправь adapter.searxng_url на http://localhost:8999
-python main.py
-```
+## Git
 
-## Известные шероховатости (держи в голове при правках)
-
-- **`/search`: engines и categories теперь приходят из запроса**, но `language`, `safesearch`, `pageno` всё ещё захардкожены в `main.py`. Поля `adapter.search.*` в конфиге по-прежнему не читаются основной функцией поиска — это легаси config_loader.
-- **`tavily_client.py` отстал от `main.py`.** Там до сих пор BeautifulSoup-скрапинг и нет `/extract`-логики. Если нужно — синхронизируй (или просто удали client.py, HTTP-API покрывает всё).
-- **`score` результата — фейковый**: `0.9 - i*0.05`. Не настоящая релевантность.
-- **Кеш `/extract` — в памяти, TTL 30 мин.** После рестарта `tavily-adapter` — `id` инвалидны, клиент должен повторить `POST /extract`. Осознанный выбор: не хочется персистентности ради простоты.
-- **`config.yaml` монтируется дважды** (в `searxng` как `/etc/searxng/settings.yml`, в `tavily-adapter` как `/srv/searxng-docker/config.yaml`). Один файл — две точки монтирования.
-- **`Caddyfile` не подключён** к `docker-compose.yaml`. Если нужен HTTPS — добавлять сервис Caddy вручную.
-- **`limiter: false`** в конфиге — SearXNG без анти-бот защиты. Ок для локалки, не ок для публичного доступа.
-- **`version: "3.7"`** в compose — устаревшее поле, Docker Compose v2 кидает warning, но игнорирует.
-- **trafilatura 2.x** установлена, тянет lxml + justext + dateparser — образ вырос на ~50MB. Это нормально.
-
-## Git / апстрим
-
-Репозиторий форкнут от [searxng/searxng-docker](https://github.com/searxng/searxng-docker) — отсюда `Caddyfile`, `.env`, `searxng-docker.service.template`, `searxng/limiter.toml`. Адаптер и `config.example.yaml` — добавлены локально (см. коммит `5af08af feat: Add SearXNG Tavily Adapter`).
+Репо **не** является GitHub-форком (история чистая с `17906b8 Initial commit`). Раньше унаследовал коммиты от upstream `searxng-docker`, сейчас standalone. `master` удалена, default — `main`.
 
 ## Когда пишешь код / документацию
 
-- Проект и вся документация на русском — пиши на русском, если не попросили иначе.
-- Не плоди новые markdown-файлы без нужды — проверь `docs/` и `README.md`.
-- Секреты (`secret_key`, токены) только в `config.yaml` или `.env`, никогда в коде.
+- Доки (README, docs/) — **английский primary**, RU + ZH переводы в `docs/{ru,zh}/`.
+- CLAUDE.md и переписка — на русском.
+- Не плоди новые markdown-файлы без нужды — проверь `docs/` сначала.
+- Секреты (`secret_key`, `OPENAI_API_KEY`) только в `config.yaml` / `.env.hermes` (оба gitignored), **никогда** в коде.
+- После изменений в `main.py` / `orchestrator.py` / `requirements.txt` — пересобрать образ: `docker compose build tavily-adapter && docker compose up -d`.
