@@ -41,8 +41,12 @@ venv.bak/
 .env.local
 .env.production
 
-# Hermes agent runtime state
-hermes-data/
+# Hermes agent runtime state — ignore everything under hermes-data/ except
+# the SOUL.md persona config we want under version control.
+# (Pattern "dir/" excludes the directory itself and nullifies any
+#  `!dir/file` negation that follows — use "dir/*" instead.)
+hermes-data/*
+!hermes-data/SOUL.md
 jobs/
 .env.hermes
 
