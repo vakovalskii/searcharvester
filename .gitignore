@@ -1,0 +1,42 @@
+# Конфигурационные файлы с чувствительными данными
+config.yaml
+
+# SearXNG данные
+searxng-data/
+valkey-data2/
+
+# Docker volumes
+volumes/
+
+# Логи
+*.log
+logs/
+
+# Временные файлы
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# IDE файлы
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment variables
+.env.local
+.env.production

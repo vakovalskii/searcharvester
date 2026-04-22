@@ -1,0 +1,68 @@
+services:
+  redis:
+    container_name: redis
+    image: docker.io/valkey/valkey:8-alpine
+    command: valkey-server --save 30 1 --loglevel warning
+    restart: unless-stopped
+    networks:
+      - searxng
+    volumes:
+      - valkey-data2:/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  searxng:
+    container_name: searxng
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    networks:
+      - searxng
+    ports:
+      - "0.0.0.0:8999:8080"  # Ваш порт 8999
+    volumes:
+      - ./config.yaml:/etc/searxng/settings.yml:ro  # Используем единый конфиг (скопируйте из config.example.yaml)
+      - searxng-data:/var/cache/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8999/
+      - BIND_ADDRESS=[::]:8080
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  tavily-adapter:
+    # Pre-built образ из GHCR (быстрый docker compose up без сборки).
+    # Для локальной разработки используйте: docker compose up --build
+    image: ghcr.io/vakovalskii/searcharvester:latest
+    build: ./simple_tavily_adapter
+    container_name: tavily-adapter
+    restart: unless-stopped
+    networks:
+      - searxng
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.yaml:/srv/searxng-docker/config.yaml:ro  # Используем единый конфиг (скопируйте из config.example.yaml)
+    depends_on:
+      - searxng
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+networks:
+  searxng:
+
+volumes:
+  valkey-data2:
+  searxng-data:

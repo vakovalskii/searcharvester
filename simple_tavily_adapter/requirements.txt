@@ -1,0 +1,8 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+aiohttp==3.9.1
+pydantic==2.5.1
+beautifulsoup4==4.12.2
+pyyaml==6.0.1
+trafilatura>=1.12,<3.0
+lxml>=4.9.0

@@ -1,0 +1,15 @@
+# Git attributes for proper language detection
+*.py linguist-language=Python
+*.yaml linguist-language=YAML
+*.yml linguist-language=YAML
+*.md linguist-language=Markdown
+*.toml linguist-language=TOML
+
+# Line endings
+* text=auto
+*.py text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf

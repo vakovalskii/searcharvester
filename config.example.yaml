@@ -1,0 +1,80 @@
+# Единый конфигурационный файл для SearXNG + Tavily Adapter
+# 
+# ВАЖНО: Скопируйте этот файл в config.yaml и измените настройки под себя:
+# cp config.example.yaml config.yaml
+#
+# Обязательно поменяйте:
+# - server.secret_key (для SearXNG)
+# - adapter.searxng_url (если нужно)
+# - adapter.scraper.user_agent (опционально)
+
+# =================================
+# SearXNG Configuration (корневой уровень для SearXNG)
+# =================================
+use_default_settings: true
+
+server:
+  # base_url определяется в SEARXNG_BASE_URL environment variable
+  secret_key: "CHANGE_ME_TO_RANDOM_SECRET_KEY_32_CHARS_OR_MORE"  # ОБЯЗАТЕЛЬНО ПОМЕНЯЙТЕ!
+  limiter: false  # Отключаем для API использования
+  image_proxy: true
+  
+# Поддержка форматов (критично для API)
+search:
+  formats:
+    - html
+    - json    # Обязательно для API!
+    - csv
+    - rss
+
+# Redis/Valkey настройки
+valkey:
+  url: redis://redis:6379/0
+
+# Оптимизация сетевых запросов
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 15.0
+  
+# Конфигурация поисковых движков
+engines:
+  - name: google
+    disabled: false
+  - name: bing
+    disabled: true    # Отключен по запросу
+  - name: duckduckgo
+    disabled: false
+  - name: brave
+    disabled: false
+  - name: startpage
+    disabled: true    # Отключаем проблемный
+  - name: yacy images
+    disabled: true    # Отключаем проблемный
+
+# =================================
+# Tavily Adapter Configuration  
+# =================================
+adapter:
+  # Настройки сервера адаптера
+  server:
+    host: "0.0.0.0"
+    port: 8000
+
+  # URL для подключения к SearXNG 
+  # Внутренний Docker URL (если в одной сети): "http://searxng:8080"
+  # Внешний URL (если отдельно): "http://localhost:8999"
+  searxng_url: "http://searxng:8080"
+
+  # Настройки скрапера
+  scraper:
+    timeout: 10
+    max_content_length: 2500
+    user_agent: "Mozilla/5.0 (compatible; TavilyBot/1.0)"  # Можете поменять на свой
+
+  # Настройки поиска по умолчанию
+  search:
+    default_max_results: 10
+    default_engines: "google,duckduckgo,brave"
+    default_categories: "general"
+    default_language: "auto"
+    safesearch: 1
