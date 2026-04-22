@@ -1,4 +1,4 @@
-import { Clock, FileText, Loader2, X, XCircle, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Clock, FileText, Loader2, Square, XCircle, CheckCircle2, AlertTriangle } from "lucide-react";
 import { EventPayload, JobStatus, Phase } from "../lib/api";
 import PhaseTimeline from "./PhaseTimeline";
 
@@ -58,11 +58,14 @@ export default function JobStatusCard({
           {isRunning && (
             <button
               onClick={onCancel}
-              className="text-slate-500 hover:text-red-400 transition-colors"
-              aria-label="Cancel"
-              title="Cancel job"
+              className="flex items-center gap-1.5 rounded-md bg-red-500/10 hover:bg-red-500/20
+                         border border-red-500/30 text-red-400 hover:text-red-300
+                         px-3 py-1.5 text-sm font-medium transition-colors"
+              aria-label="Stop"
+              title="Stop and kill the running container"
             >
-              <X size={18} />
+              <Square size={12} className="fill-current" />
+              <span>Stop</span>
             </button>
           )}
         </div>

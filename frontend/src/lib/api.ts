@@ -62,8 +62,9 @@ export async function createResearch(query: string): Promise<ResearchCreated> {
   return r.json();
 }
 
-export async function getJob(jobId: string): Promise<JobSnapshot> {
+export async function getJob(jobId: string): Promise<JobSnapshot | null> {
   const r = await fetch(`${API_URL}/research/${jobId}`);
+  if (r.status === 404) return null;
   if (!r.ok) throw new Error(`GET /research/${jobId}: ${r.status}`);
   return r.json();
 }

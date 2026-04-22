@@ -22,10 +22,22 @@ export default function DebugDrawer({ jobId, isRunning }: Props) {
     }
 
     let cancelled = false;
+    let handle: number | null = null;
+
     const tick = async () => {
       try {
         const l = await getLogs(jobId);
-        if (!cancelled && l !== null) setLogs(l);
+        if (cancelled) return;
+        if (l !== null) {
+          setLogs(l);
+        } else {
+          // 404 — job is gone (e.g. adapter restart). Stop polling and clear.
+          setLogs("");
+          if (handle !== null) {
+            clearInterval(handle);
+            handle = null;
+          }
+        }
       } catch (e) {
         console.debug("log fetch error", e);
       }
@@ -33,11 +45,13 @@ export default function DebugDrawer({ jobId, isRunning }: Props) {
 
     tick(); // immediate first poll
 
-    if (!isRunning) return;
-    const handle = window.setInterval(tick, 3000);
+    if (isRunning) {
+      handle = window.setInterval(tick, 3000);
+    }
+
     return () => {
       cancelled = true;
-      clearInterval(handle);
+      if (handle !== null) clearInterval(handle);
     };
   }, [jobId, isRunning]);
 

@@ -12,6 +12,7 @@ import {
   cancelJob,
   checkHealth,
   createResearch,
+  getJob,
   subscribeToJob,
 } from "./lib/api";
 
@@ -81,6 +82,10 @@ export default function App() {
   const subRef = useRef<SSESubscription | null>(null);
 
   // (Re-)subscribe when the active job changes (includes page-reload restore).
+  // IMPORTANT: before opening the SSE stream we check the job actually exists
+  // on the server. The orchestrator's _jobs dict is in-memory, so after an
+  // adapter restart all previous job_ids are gone and the SSE would just fail
+  // silently while the debug poller spams 404s. We clear the hash instead.
   useEffect(() => {
     subRef.current?.close();
     subRef.current = null;
@@ -89,24 +94,59 @@ export default function App() {
 
     if (!job) return;
 
-    const sub = subscribeToJob(
-      job.jobId,
-      (kind, payload) => {
-        setLatest(payload);
-        if (kind !== "status") {
-          setFinalStatus(payload.status);
-        }
-      },
-      (e) => {
-        console.error("SSE error", e);
+    let aborted = false;
+    (async () => {
+      const snapshot = await getJob(job.jobId).catch(() => null);
+      if (aborted) return;
+      if (snapshot === null) {
+        // Job unknown to the server — drop from URL.
+        setJob(null);
+        return;
       }
-    );
-    subRef.current = sub;
+
+      // If the job already finished while we were away (e.g. page reload after
+      // completion), fill state from the snapshot and skip SSE.
+      const terminal = ["completed", "failed", "timeout", "cancelled"];
+      if (terminal.includes(snapshot.status)) {
+        setLatest({
+          status: snapshot.status,
+          phase: snapshot.status,
+          elapsed_sec: snapshot.duration_sec ?? null,
+          artifacts: {},
+          duration_sec: snapshot.duration_sec,
+          report: snapshot.report,
+          error: snapshot.error,
+        });
+        setFinalStatus(snapshot.status);
+        return;
+      }
+
+      // Live job — open SSE.
+      const sub = subscribeToJob(
+        job.jobId,
+        (kind, payload) => {
+          setLatest(payload);
+          if (kind !== "status") {
+            setFinalStatus(payload.status);
+          }
+        },
+        async () => {
+          // SSE errored — double-check whether the job is still there.
+          const check = await getJob(job.jobId).catch(() => null);
+          if (check === null) {
+            setJob(null);
+          }
+        }
+      );
+      subRef.current = sub;
+    })();
 
     return () => {
-      sub.close();
+      aborted = true;
+      subRef.current?.close();
       subRef.current = null;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job?.jobId]);
 
   const onSubmit = async (query: string) => {

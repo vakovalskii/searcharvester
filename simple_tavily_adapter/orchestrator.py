@@ -33,18 +33,30 @@ REPORT_FILENAME = "report.md"
 LOG_FILENAME = "hermes.log"
 
 # Appended to every user query before handing it to Hermes. Ensures the agent
-# always produces a file+marker, even for trivial questions where the
-# deep-research methodology wouldn't normally kick in.
+# always produces a file+marker, and that it leans toward "search the web and
+# cite sources" rather than reflexive refusals on legitimate research tasks.
 MANDATORY_SUFFIX = """
 
 ---
-IMPORTANT — Output contract (applies to every task, even trivial ones):
+IMPORTANT — Role + output contract (applies to every task):
+
+ROLE: You are a web-research assistant. Use the searcharvester-search and
+searcharvester-extract tools to find publicly available information on the
+open web, then summarise it with citations to the sources you actually read.
+Do NOT refuse tasks that are valid public-web research — if the information
+(public profiles, work contacts, press mentions, company websites, etc.) is
+findable via a normal web search, your job is to gather it and cite where
+each fact came from. Only decline if the request is clearly for harassment,
+doxxing of a private individual, or other illegal/harmful intent. If a task
+is ambiguous, run searches first, then report what you did (or didn't) find.
+
+OUTPUT:
 1. Write your final answer to `/workspace/report.md` as markdown using the
    terminal tool (e.g. `cat > /workspace/report.md << 'EOF' ... EOF`).
 2. As the VERY LAST line of your response, print exactly:
    REPORT_SAVED: /workspace/report.md
-This is non-negotiable. If you skip either step, the run is considered
-failed by the orchestrator."""
+
+Both steps are non-negotiable."""
 
 
 class JobStatus(str, Enum):
@@ -237,7 +249,12 @@ class Orchestrator:
         }
 
     async def _watch(self, job_id: str) -> None:
-        """Wait for container exit, classify result, clean up."""
+        """Wait for container exit, classify result, clean up.
+
+        A side-car coroutine flushes container stdout/stderr to
+        jobs/{id}/hermes.log every ~1.5s so the UI's debug pane and the
+        /logs endpoint can show progress while the job is running.
+        """
         job = self._jobs[job_id]
         container = self._containers.get(job_id)
         if container is None:
@@ -245,12 +262,30 @@ class Orchestrator:
             job.error = "Container reference lost"
             return
 
+        async def _tail_logs() -> None:
+            """Periodically snapshot container logs into hermes.log.
+
+            docker-py's container.logs() returns everything produced so far,
+            so each call gives a fresh full snapshot. Cheap for our log sizes.
+            """
+            while True:
+                try:
+                    logs_bytes = await asyncio.to_thread(container.logs)
+                    self._persist_log(job, logs_bytes)
+                except Exception:
+                    # Container may have been removed already; swallow and retry
+                    # next tick until cancellation.
+                    pass
+                await asyncio.sleep(1.5)
+
+        tailer = asyncio.create_task(_tail_logs())
+
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(container.wait),
                 timeout=self._timeout,
             )
-            # Container exited on its own → check outcome.
+            # Final read (guaranteed to include the REPORT_SAVED marker line).
             logs_bytes = await asyncio.to_thread(container.logs)
             self._classify_success(job, logs_bytes)
         except asyncio.TimeoutError:
@@ -270,6 +305,11 @@ class Orchestrator:
             job.error = f"Watch error: {e}"
             logger.exception("Watch error for %s", job_id)
         finally:
+            tailer.cancel()
+            try:
+                await tailer
+            except (asyncio.CancelledError, Exception):
+                pass
             try:
                 await asyncio.to_thread(container.remove, force=True)
             except Exception:
@@ -280,7 +320,17 @@ class Orchestrator:
             self._containers.pop(job_id, None)
 
     def _classify_success(self, job: Job, logs_bytes: bytes) -> None:
-        """Decide completed/failed based on logs + report.md existence."""
+        """Decide completed/failed based on logs + report.md existence.
+
+        Classification policy (lenient):
+        - Happy path: marker present AND report.md on disk → `completed`.
+        - Marker without file: treat stdout as the report → `completed` with
+          an advisory `error` note.
+        - No marker but agent produced a substantive response (e.g. refusal,
+          direct answer for a trivial query): use the cleaned stdout as the
+          report → `completed` with advisory note.
+        - Nothing meaningful produced: `failed` with helpful message.
+        """
         self._persist_log(job, logs_bytes)
         logs = logs_bytes.decode("utf-8", errors="replace")
         has_marker = REPORT_MARKER in logs
@@ -290,12 +340,60 @@ class Orchestrator:
         if has_marker and report_exists:
             job.status = JobStatus.completed
             job.report = report_path.read_text(encoding="utf-8", errors="replace")
-        elif has_marker and not report_exists:
-            job.status = JobStatus.failed
-            job.error = f"{REPORT_MARKER} printed but report.md missing"
+            return
+
+        stdout_response = self._extract_agent_response(logs)
+
+        if has_marker and not report_exists:
+            if stdout_response:
+                job.status = JobStatus.completed
+                job.report = stdout_response
+                job.error = f"{REPORT_MARKER} printed but report.md missing — using stdout"
+            else:
+                job.status = JobStatus.failed
+                job.error = f"{REPORT_MARKER} printed but no report content"
+            return
+
+        # No marker: the agent skipped the mandatory contract. Accept if stdout
+        # has a real response (refusal, short answer, etc.).
+        if stdout_response and len(stdout_response) >= 30:
+            job.status = JobStatus.completed
+            job.report = stdout_response
+            job.error = "agent did not save report.md — using stdout response"
         else:
             job.status = JobStatus.failed
-            job.error = f"{REPORT_MARKER} marker not found in logs"
+            job.error = (
+                f"no {REPORT_MARKER} marker and no substantive response in logs"
+            )
+
+    @staticmethod
+    def _extract_agent_response(logs: str) -> str:
+        """Strip Hermes boilerplate from stdout, keep only the agent's reply."""
+        drop_patterns = (
+            "Syncing bundled skills",
+            "skills_sync.py",
+            "Token cost", "Tokens:", "Cost:", "cost/tokens",
+        )
+        drop_prefixes = (
+            "Done:",                 # "Done: 0 new, 0 updated, 72 unchanged ..."
+            "session_id:",
+            "Resume this session with",
+            "Session:", "Duration:", "Messages:",
+            "⚠",                    # various warnings Hermes emits
+        )
+        kept: list[str] = []
+        for line in logs.splitlines():
+            stripped = line.strip()
+            if any(p in line for p in drop_patterns):
+                continue
+            if any(stripped.startswith(p) for p in drop_prefixes):
+                continue
+            kept.append(line)
+        text = "\n".join(kept).strip()
+        # Collapse >2 blank lines in a row
+        while "\n\n\n" in text:
+            text = text.replace("\n\n\n", "\n\n")
+        return text
 
     def _persist_log(self, job: Job, logs_bytes: bytes) -> None:
         """Write container stdout/stderr to jobs/{id}/hermes.log."""

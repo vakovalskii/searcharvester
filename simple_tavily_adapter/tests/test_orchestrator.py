@@ -102,19 +102,75 @@ async def test_watch_without_marker_marks_failed(fake_docker, orch_config):
 
 
 @pytest.mark.asyncio
-async def test_watch_marker_but_no_report_md_marks_failed(
+async def test_watch_marker_but_no_report_md_falls_back_to_stdout(
     fake_docker, orch_config, tmp_jobs_dir
 ):
+    """Lenient: marker printed, file missing, but agent put content in stdout.
+    Should complete using stdout content (with an advisory note)."""
+    body = (
+        "Syncing bundled skills into ~/.hermes/skills/ ...\n"
+        "Done: 0 new, 0 updated, 72 unchanged. 72 total bundled.\n"
+        "\n"
+        "# Short answer\n"
+        "The capital of France is Paris.\n"
+        "\n"
+        f"{REPORT_MARKER} /workspace/report.md\n"
+        "session_id: 20260422_120000_abcdef\n"
+    )
+    fake_docker.containers.prepare(FakeContainer(_logs=body.encode()))
+    orch = Orchestrator(docker_client=fake_docker, **orch_config)
+    job_id = await orch.spawn(query="x")
+    await asyncio.sleep(0.1)
+    job = orch.get(job_id)
+    assert job.status == JobStatus.completed
+    assert "Paris" in job.report
+    assert "report.md missing" in job.error
+
+
+@pytest.mark.asyncio
+async def test_watch_no_marker_but_agent_refusal_is_still_completed(
+    fake_docker, orch_config, tmp_jobs_dir
+):
+    """Lenient: no marker at all, but agent produced a response (refusal).
+    Should complete with stdout content (with an advisory note)."""
     fake_docker.containers.prepare(
-        FakeContainer(_logs=f"{REPORT_MARKER} /workspace/report.md\n".encode())
+        FakeContainer(
+            _logs=(
+                b"Syncing bundled skills into ~/.hermes/skills/ ...\n"
+                b"Done: 0 new, 0 updated, 72 unchanged. 72 total bundled.\n"
+                b"session_id: 20260422_120000_abcdef\n"
+                b"I'm sorry, but I can't help with that request for privacy reasons.\n"
+            )
+        )
     )
     orch = Orchestrator(docker_client=fake_docker, **orch_config)
     job_id = await orch.spawn(query="x")
-    # Deliberately DO NOT write report.md.
+    await asyncio.sleep(0.1)
+    job = orch.get(job_id)
+    assert job.status == JobStatus.completed
+    assert "sorry" in job.report.lower()
+    assert "did not save" in job.error
+
+
+@pytest.mark.asyncio
+async def test_watch_no_marker_and_empty_stdout_still_fails(
+    fake_docker, orch_config, tmp_jobs_dir
+):
+    """Sanity: no marker AND nothing meaningful in stdout → still failed."""
+    fake_docker.containers.prepare(
+        FakeContainer(
+            _logs=(
+                b"Syncing bundled skills into ~/.hermes/skills/ ...\n"
+                b"Done: 0 new, 0 updated, 72 unchanged. 72 total bundled.\n"
+            )
+        )
+    )
+    orch = Orchestrator(docker_client=fake_docker, **orch_config)
+    job_id = await orch.spawn(query="x")
     await asyncio.sleep(0.1)
     job = orch.get(job_id)
     assert job.status == JobStatus.failed
-    assert "report.md" in job.error
+    assert "no substantive response" in job.error.lower()
 
 
 @pytest.mark.asyncio
