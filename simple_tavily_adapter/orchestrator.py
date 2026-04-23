@@ -233,15 +233,19 @@ class Orchestrator:
             "SEARCHARVESTER_URL": self._adapter_url,
         }
         wrapped_query = query + MANDATORY_SUFFIX
-        # NOT using -Q here on purpose: quiet mode silences tool previews and
-        # the per-turn spinner, so the UI debug pane has nothing to show while
-        # the agent works. The extra banner / exit-summary lines are filtered
-        # in _extract_agent_response.
+        # Toolsets passed to the lead agent:
+        #   terminal   — write plan.md / notes.md / report.md
+        #   delegation — expose delegate_task so the lead can spawn parallel
+        #                sub-agents when the skill calls for it
+        # NOT using -Q on purpose: quiet mode silences tool previews and the
+        # per-turn spinner, so the UI debug pane has nothing to show. The
+        # extra banner / exit-summary lines are filtered in
+        # _extract_agent_response.
         return {
             "command": [
                 "chat", "-q", wrapped_query,
                 "-s", ",".join(self._skills),
-                "-t", "terminal",
+                "-t", "terminal,delegation",
                 "--yolo",
                 "--max-turns", str(self._max_turns),
             ],
