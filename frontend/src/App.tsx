@@ -14,6 +14,7 @@ import {
   checkHealth,
   createResearch,
   getJob,
+  getSnapshot,
   subscribeToJob,
 } from "./lib/api";
 
@@ -117,6 +118,10 @@ export default function App() {
 
       const terminal = ["completed", "failed", "timeout", "cancelled"];
       if (terminal.includes(snapshot.status)) {
+        // Terminal job loaded via URL — still show the activity timeline
+        // by fetching the recorded event log one-shot.
+        const snap = await getSnapshot(job.jobId).catch(() => null);
+        if (!aborted && snap) setEvents(snap.events);
         setFinalStatus({
           job_id: snapshot.job_id,
           status: snapshot.status,
@@ -131,9 +136,6 @@ export default function App() {
         job.jobId,
         (ev) => {
           setEvents((prev) => [...prev, ev]);
-          // If the `done` event carried a successful status, reflect it;
-          // we'll also get the final JobTerminalStatus next, but this
-          // makes the UI snappier.
           if (ev.type === "done") {
             const status = (ev.payload.status as JobStatus | undefined) ?? null;
             if (status) {
@@ -145,10 +147,14 @@ export default function App() {
         },
         async (final) => {
           setFinalStatus(final);
-          // Fetch the final report text (events carry only previews).
+          // Drain any events the SSE may have missed (backfilled sub-agent
+          // messages that got appended between our last yield and the status
+          // frame). Snapshot API sees everything the orchestrator recorded.
+          const snap = await getSnapshot(job.jobId).catch(() => null);
+          if (snap) setEvents(snap.events);
           if (final.has_report) {
-            const snap = await getJob(job.jobId).catch(() => null);
-            if (snap?.report) setReport(snap.report);
+            const jobSnap = await getJob(job.jobId).catch(() => null);
+            if (jobSnap?.report) setReport(jobSnap.report);
           }
         },
         async () => {

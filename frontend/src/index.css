@@ -75,3 +75,20 @@ body,
   font-feature-settings: "calt" 0;
   @apply whitespace-pre-wrap break-words;
 }
+
+/* Compact markdown styling for sub-agent summary cards — smaller than
+   .md-body but keeps basic structure (bullets, bold, code, links). */
+.subagent-md p { @apply my-1.5; }
+.subagent-md strong { @apply text-slate-100; }
+.subagent-md ul, .subagent-md ol { @apply ml-4 my-1.5; }
+.subagent-md ul { @apply list-disc; }
+.subagent-md ol { @apply list-decimal; }
+.subagent-md li { @apply my-0.5; }
+.subagent-md a { @apply text-accent-400 hover:text-accent-500 underline break-all; }
+.subagent-md code { @apply bg-base-800 px-1 py-0.5 rounded font-mono text-[11px] text-slate-100; }
+.subagent-md h1, .subagent-md h2, .subagent-md h3, .subagent-md h4 {
+  @apply font-semibold text-slate-100 mt-2 mb-1;
+}
+.subagent-md h3 { @apply text-xs; }
+.subagent-md h4 { @apply text-xs; }
+.subagent-md blockquote { @apply border-l-2 border-base-600 pl-2 italic text-slate-400 my-1.5; }

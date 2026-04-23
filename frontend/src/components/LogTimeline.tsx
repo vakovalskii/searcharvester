@@ -12,6 +12,7 @@ import {
   BrainCog,
   Loader2,
 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import { AgentEvent } from "../lib/api";
 
 interface Props {
@@ -35,41 +36,44 @@ export default function LogTimeline({ events }: Props) {
   const leadEvents = events.filter((e) => e.agent_id === "lead");
   const subEvents = events.filter((e) => e.agent_id !== "lead");
 
-  // Map: delegate_call_id → list of sub agent_ids (ordered by task_index)
-  const subsByCallId = new Map<string, { subId: string; events: AgentEvent[]; goal: string; status: string }>();
+  // Group sub-agent events by agent_id (globally unique across batches).
+  // Track delegate_call_id separately so we can match buckets back to the
+  // lead's delegate_task tool_call for inline rendering.
+  const subsBySubId = new Map<string, {
+    subId: string;
+    events: AgentEvent[];
+    goal: string;
+    status: string;
+    callId: string;
+  }>();
   for (const ev of subEvents) {
     const subId = ev.agent_id;
-    const callId =
-      (ev.payload.delegate_call_id as string | undefined) ??
-      // fallback: bucket by subId prefix
-      subId.split("-").slice(0, 2).join("-");
-    const key = `${callId}::${subId}`;
-    const bucket = subsByCallId.get(key) ?? {
+    const bucket = subsBySubId.get(subId) ?? {
       subId,
       events: [],
       goal: "",
       status: "running",
+      callId: "",
     };
     bucket.events.push(ev);
     if (ev.type === "spawn" && typeof ev.payload.goal === "string") {
       bucket.goal = ev.payload.goal;
     }
+    if (typeof ev.payload.delegate_call_id === "string" && !bucket.callId) {
+      bucket.callId = ev.payload.delegate_call_id as string;
+    }
     if (ev.type === "done") {
       bucket.status = String(ev.payload.status ?? "completed");
     }
-    subsByCallId.set(key, bucket);
+    subsBySubId.set(subId, bucket);
   }
 
-  // For each lead tool_call with title=="delegate_task", find the sub bucket(s)
-  // whose events carry that delegate_call_id.
   const subsForCall = (toolCallId: string | undefined) => {
     if (!toolCallId) return [];
     const out = [];
-    for (const [key, bucket] of subsByCallId.entries()) {
-      const [callId] = key.split("::");
-      if (callId === toolCallId) out.push(bucket);
+    for (const bucket of subsBySubId.values()) {
+      if (bucket.callId === toolCallId) out.push(bucket);
     }
-    // Sort by task_index (from the spawn event)
     out.sort((a, b) => {
       const ai = spawnTaskIndex(a.events);
       const bi = spawnTaskIndex(b.events);
@@ -79,7 +83,7 @@ export default function LogTimeline({ events }: Props) {
   };
 
   const toolCallCount = leadEvents.filter((e) => e.type === "tool_call").length;
-  const totalSubs = subsByCallId.size;
+  const totalSubs = subsBySubId.size;
 
   return (
     <div className="space-y-3">
@@ -223,13 +227,18 @@ function SubAgentCard({
         </div>
       )}
       {summary && (
-        <div className="px-2.5 py-2 text-xs text-slate-300 leading-relaxed max-h-32 overflow-y-auto">
-          {truncate(summary, 600)}
+        <div className="px-2.5 py-2 text-xs text-slate-300 leading-relaxed max-h-64 overflow-y-auto subagent-md">
+          <ReactMarkdown>{summary}</ReactMarkdown>
         </div>
       )}
       {!summary && isRunning && (
         <div className="px-2.5 py-2 text-xs text-slate-500 italic">
           researching…
+        </div>
+      )}
+      {!summary && isDone && (
+        <div className="px-2.5 py-2 text-xs text-slate-500 italic">
+          done · summary not captured
         </div>
       )}
     </div>

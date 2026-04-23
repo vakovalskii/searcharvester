@@ -144,7 +144,6 @@ class Orchestrator:
             return False
         if job.status not in (JobStatus.queued, JobStatus.running):
             return False
-        job.status = JobStatus.cancelled
         job.finished_at = datetime.now(timezone.utc)
         if job.started_at:
             job.duration_sec = (job.finished_at - job.started_at).total_seconds()
@@ -161,6 +160,8 @@ class Orchestrator:
             job_id=job_id, agent_id="lead", type="done",
             payload={"status": "cancelled"},
         ))
+        job.status = JobStatus.cancelled
+        await self._notify(job)
         return True
 
     def snapshot(self, job_id: str) -> list[Event]:
@@ -361,15 +362,20 @@ class Orchestrator:
                 await asyncio.wait_for(prompt_task, timeout=self._timeout)
             except asyncio.TimeoutError:
                 prompt_task.cancel()
-                job.status = JobStatus.timeout
                 job.error = f"exceeded timeout of {self._timeout}s"
                 await self._emit(job, Event.now(
                     job_id=job_id, agent_id="lead", type="done",
                     payload={"status": "timeout", "error": job.error},
                 ))
+                job.status = JobStatus.timeout
+                await self._notify(job)
                 return
 
-            # Prompt returned — agent finished. Collect artifacts.
+            # Prompt returned. Before finalising, backfill any sub-agent
+            # events that ACP truncated away (it caps tool_result content
+            # around 2000 chars, so subs past index ~1 silently hang).
+            await self._backfill_subagents(job, session.session_id)
+
             await self._finalize_success(job)
 
         except Exception as e:
@@ -395,6 +401,94 @@ class Orchestrator:
             if job.started_at:
                 job.duration_sec = (job.finished_at - job.started_at).total_seconds()
 
+    async def _backfill_subagents(self, job: Job, session_id: str) -> None:
+        """Read the lead's Hermes session file on disk and emit `message` +
+        `done` events for sub-agents that never got a terminal state through
+        the ACP stream.
+
+        The ACP adapter in Hermes truncates `tool_call/progress.content` to
+        ~2000 chars, so for a delegate_task batch with 3+ children the tail
+        results are never visible over the wire. The session file keeps the
+        full un-truncated JSON, so we backfill from there post-prompt.
+        """
+        session_path = Path(self._hermes_home) / "sessions" / f"session_{session_id}.json"
+        if not session_path.exists():
+            logger.debug("no session file at %s — skipping backfill", session_path)
+            return
+        try:
+            data = await asyncio.to_thread(
+                lambda: json.loads(session_path.read_text(encoding="utf-8", errors="replace"))
+            )
+        except Exception:
+            logger.exception("failed to read lead session file for backfill")
+            return
+
+        from events import _extract_delegate_results_from_text, _sub_agent_id
+
+        messages = data.get("messages") or []
+
+        # Pre-index: which sub_ids already have a done event from ACP?
+        done_sub_ids: set[str] = {
+            e.agent_id for e in job.events
+            if e.type == "done" and e.parent_id == "lead"
+        }
+        message_sub_ids: set[str] = {
+            e.agent_id for e in job.events
+            if e.type == "message" and e.parent_id == "lead"
+        }
+
+        # Walk assistant → tool pairs looking for delegate_task calls.
+        for i, msg in enumerate(messages):
+            if msg.get("role") != "assistant":
+                continue
+            for tc in msg.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                if not _is_delegate_function_name(fn.get("name")):
+                    continue
+                acp_call_id = _match_acp_delegate_call_id(
+                    job_events=job.events,
+                    sess_call_index=i,
+                    session_messages=messages,
+                )
+                if acp_call_id is None:
+                    # Fallback: walk delegate calls in job.events in order
+                    # and match by position.
+                    acp_call_id = _nth_delegate_call_id(job.events, _delegate_index(messages, i))
+                if acp_call_id is None:
+                    continue
+
+                # Find the matching tool response in session messages
+                content = _find_tool_response(messages, tc.get("id"), after=i)
+                if not content:
+                    continue
+                results = _extract_delegate_results_from_text(content)
+                if not results:
+                    continue
+
+                for r in results:
+                    idx = r.get("task_index")
+                    if idx is None:
+                        continue
+                    sub_id = _sub_agent_id(acp_call_id, int(idx) + 1)
+                    summary = r.get("summary") or ""
+                    if summary and sub_id not in message_sub_ids:
+                        await self._emit(job, Event.now(
+                            job_id=job.id, agent_id=sub_id, parent_id="lead",
+                            type="message",
+                            payload={"text": summary, "backfilled": True},
+                        ))
+                    if sub_id not in done_sub_ids:
+                        await self._emit(job, Event.now(
+                            job_id=job.id, agent_id=sub_id, parent_id="lead",
+                            type="done",
+                            payload={
+                                "status": r.get("status", "completed"),
+                                "error": r.get("error"),
+                                "delegate_call_id": acp_call_id,
+                                "backfilled": True,
+                            },
+                        ))
+
     async def _drain_stderr(self, job: Job, proc: Any) -> None:
         """Append hermes stderr to hermes.log for debug."""
         if proc.stderr is None:
@@ -416,17 +510,22 @@ class Orchestrator:
             logger.debug("stderr drain error", exc_info=True)
 
     async def _finalize_success(self, job: Job) -> None:
+        """Emit the final `done` event BEFORE flipping job.status to terminal,
+        otherwise the SSE subscriber can wake between the status flip and the
+        event append, see (terminal + idx >= len) and return early — dropping
+        the last event before the client sees it.
+        """
         report_path = (job.workspace_path or Path()) / REPORT_FILENAME
         if report_path.exists():
             job.report = report_path.read_text(encoding="utf-8", errors="replace")
-            job.status = JobStatus.completed
             await self._emit(job, Event.now(
                 job_id=job.id, agent_id="lead", type="done",
                 payload={"status": "completed", "report_bytes": len(job.report)},
             ))
+            job.status = JobStatus.completed
+            await self._notify(job)
             return
 
-        # No report.md — fall back on the last `message` events as report text
         msg_chunks = [
             e.payload.get("text", "") for e in job.events
             if e.type == "message" and isinstance(e.payload.get("text"), str)
@@ -434,23 +533,33 @@ class Orchestrator:
         fallback = "".join(msg_chunks).strip()
         if fallback:
             job.report = fallback
-            job.status = JobStatus.completed
             job.error = "no report.md — using assistant message"
             await self._emit(job, Event.now(
                 job_id=job.id, agent_id="lead", type="done",
                 payload={"status": "completed", "note": job.error},
             ))
+            job.status = JobStatus.completed
+            await self._notify(job)
             return
 
-        job.status = JobStatus.failed
         job.error = "agent finished without report.md or any message"
         await self._emit(job, Event.now(
             job_id=job.id, agent_id="lead", type="done",
             payload={"status": "failed", "error": job.error},
         ))
+        job.status = JobStatus.failed
+        await self._notify(job)
+
+    async def _notify(self, job: Job) -> None:
+        """Wake the SSE subscriber after a terminal state change — without
+        this a subscriber blocked in cond.wait() would keep waiting up to 1s
+        before re-checking job.status and exiting the stream."""
+        if job._cond is None:
+            return
+        async with job._cond:
+            job._cond.notify_all()
 
     async def _fail(self, job: Job, error: str) -> None:
-        job.status = JobStatus.failed
         job.error = error
         job.finished_at = datetime.now(timezone.utc)
         if job.started_at:
@@ -459,3 +568,71 @@ class Orchestrator:
             job_id=job.id, agent_id="lead", type="done",
             payload={"status": "failed", "error": error},
         ))
+        job.status = JobStatus.failed
+        await self._notify(job)
+
+
+def _is_delegate_function_name(name: Any) -> bool:
+    if not name:
+        return False
+    n = str(name).lower()
+    return "delegate" in n and ("task" in n or "tasks" in n)
+
+
+def _delegate_index(messages: list[Any], i: int) -> int:
+    """Count how many delegate_task assistant messages we've seen up to (and
+    including) index i. Gives us a 0-based ordinal to align with job.events
+    delegate tool_calls."""
+    seen = -1
+    for j, m in enumerate(messages[: i + 1]):
+        if m.get("role") != "assistant":
+            continue
+        for tc in m.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            if _is_delegate_function_name(fn.get("name")):
+                seen += 1
+    return seen
+
+
+def _match_acp_delegate_call_id(
+    *, job_events: list[Any], sess_call_index: int, session_messages: list[Any],
+) -> str | None:
+    """Best-effort: use ordinal position of this delegate call inside the
+    session to pick the Nth delegate tool_call_id from the ACP event stream.
+    Returns None when counts don't line up (we then fall back to fuzzy match
+    by goal). Most jobs fire delegate_task once, so this usually matches on
+    ordinal 0 directly.
+    """
+    ordinal = _delegate_index(session_messages, sess_call_index)
+    return _nth_delegate_call_id(job_events, ordinal)
+
+
+def _nth_delegate_call_id(job_events: list[Any], n: int) -> str | None:
+    seen = -1
+    for e in job_events:
+        if e.type != "tool_call" or e.agent_id != "lead":
+            continue
+        title = str((e.payload or {}).get("title") or "")
+        if not ("delegate" in title.lower() and "task" in title.lower()):
+            continue
+        seen += 1
+        if seen == n:
+            return (e.payload or {}).get("id")
+    return None
+
+
+def _find_tool_response(messages: list[Any], tc_id: Any, *, after: int) -> str:
+    """Scan forward from `after` to find the `role: tool` message whose
+    tool_call_id matches `tc_id`. Returns its content string (may be huge —
+    that's the point)."""
+    if not tc_id:
+        return ""
+    for m in messages[after + 1 :]:
+        if m.get("role") != "tool":
+            continue
+        if m.get("tool_call_id") == tc_id:
+            c = m.get("content", "")
+            return c if isinstance(c, str) else str(c)
+    return ""
+
+

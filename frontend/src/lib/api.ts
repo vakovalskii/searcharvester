@@ -85,6 +85,26 @@ export async function cancelJob(jobId: string): Promise<void> {
   await fetch(`${API_URL}/research/${jobId}`, { method: "DELETE" });
 }
 
+export interface JobSnapshotWithEvents {
+  job_id: string;
+  status: JobStatus;
+  phase: string;
+  artifacts: Record<string, number>;
+  events: AgentEvent[];
+}
+
+/** One-shot fetch of every event the orchestrator has recorded for a job.
+ *  Used on initial load of a terminal job (SSE isn't opened) and as a
+ *  safety net after SSE closes (in case backfilled events weren't drained). */
+export async function getSnapshot(
+  jobId: string
+): Promise<JobSnapshotWithEvents | null> {
+  const r = await fetch(`${API_URL}/research/${jobId}/snapshot`);
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`GET /research/${jobId}/snapshot: ${r.status}`);
+  return r.json();
+}
+
 export async function checkHealth(): Promise<{ status: string; orchestrator: string }> {
   const r = await fetch(`${API_URL}/health`);
   if (!r.ok) throw new Error(`GET /health: ${r.status}`);
