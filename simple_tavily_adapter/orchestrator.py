@@ -465,12 +465,35 @@ class Orchestrator:
                 if not results:
                     continue
 
+                # Map sub-question goal → sub-agent session file, so we can
+                # fall back on the sub's own session when Hermes wrote
+                # "(empty)" or an otherwise useless summary.
+                sess_dir = Path(self._hermes_home) / "sessions"
+                sub_sessions_by_goal = _index_sub_sessions(sess_dir, session_id)
+
                 for r in results:
                     idx = r.get("task_index")
                     if idx is None:
                         continue
                     sub_id = _sub_agent_id(acp_call_id, int(idx) + 1)
-                    summary = r.get("summary") or ""
+                    summary = (r.get("summary") or "").strip()
+
+                    diagnostic: str | None = None
+                    used_status = r.get("status", "completed")
+
+                    if _is_useless_summary(summary):
+                        recovered, diag = _recover_from_sub_session(
+                            sub_sessions_by_goal, idx, messages, tc.get("id")
+                        )
+                        if recovered:
+                            summary = recovered
+                        if diag:
+                            diagnostic = diag
+                            # If the model didn't produce any content, the
+                            # sub effectively failed — surface that.
+                            if not recovered:
+                                used_status = "failed"
+
                     if summary and sub_id not in message_sub_ids:
                         await self._emit(job, Event.now(
                             job_id=job.id, agent_id=sub_id, parent_id="lead",
@@ -478,15 +501,17 @@ class Orchestrator:
                             payload={"text": summary, "backfilled": True},
                         ))
                     if sub_id not in done_sub_ids:
+                        payload: dict[str, Any] = {
+                            "status": used_status,
+                            "error": r.get("error") or diagnostic,
+                            "delegate_call_id": acp_call_id,
+                            "backfilled": True,
+                        }
+                        if diagnostic:
+                            payload["note"] = diagnostic
                         await self._emit(job, Event.now(
                             job_id=job.id, agent_id=sub_id, parent_id="lead",
-                            type="done",
-                            payload={
-                                "status": r.get("status", "completed"),
-                                "error": r.get("error"),
-                                "delegate_call_id": acp_call_id,
-                                "backfilled": True,
-                            },
+                            type="done", payload=payload,
                         ))
 
     async def _drain_stderr(self, job: Job, proc: Any) -> None:
@@ -633,6 +658,147 @@ def _find_tool_response(messages: list[Any], tc_id: Any, *, after: int) -> str:
         if m.get("tool_call_id") == tc_id:
             c = m.get("content", "")
             return c if isinstance(c, str) else str(c)
+    return ""
+
+
+_USELESS_SUMMARIES = {"", "(empty)", "none", "null", "n/a", "na"}
+
+
+def _is_useless_summary(s: str) -> bool:
+    """Detect Hermes' placeholder for a sub-agent that returned no content."""
+    return s.strip().lower() in _USELESS_SUMMARIES or len(s.strip()) < 6
+
+
+def _index_sub_sessions(
+    sess_dir: Path, lead_session_id: str
+) -> dict[str, dict[str, Any]]:
+    """Map first-user-message prefix → sub-agent session data, scoped to the
+    window around when the lead session was last updated.
+
+    Sub-agent sessions are timestamp-named files like
+    session_20260423_083028_550f93.json; the lead is UUID-named. We skip
+    the lead file and anything whose first message doesn't look like a
+    sub-question prompt."""
+    out: dict[str, dict[str, Any]] = {}
+    lead_path = sess_dir / f"session_{lead_session_id}.json"
+    try:
+        lead_mtime = lead_path.stat().st_mtime
+    except Exception:
+        return out
+    import time
+    window = 1800  # 30 min — ample for multi-batch deep research
+    for p in sess_dir.glob("session_*.json"):
+        if p == lead_path:
+            continue
+        try:
+            mtime = p.stat().st_mtime
+        except Exception:
+            continue
+        if abs(mtime - lead_mtime) > window:
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        msgs = data.get("messages") or []
+        if not msgs:
+            continue
+        first = msgs[0]
+        if first.get("role") != "user":
+            continue
+        goal_text = str(first.get("content") or "").strip()
+        if not goal_text:
+            continue
+        # Use a 60-char prefix as the key — robust to truncation on either end.
+        key = goal_text[:60]
+        out[key] = data
+    return out
+
+
+def _recover_from_sub_session(
+    sub_sessions_by_goal: dict[str, dict[str, Any]],
+    task_index: Any,
+    lead_messages: list[Any],
+    delegate_tc_id: Any,
+) -> tuple[str, str | None]:
+    """Try to fish out the sub-agent's real content when Hermes logged
+    "(empty)". Returns (recovered_summary, diagnostic_note).
+
+    - recovered_summary: empty if we couldn't find one
+    - diagnostic_note: human-readable reason (e.g. "finish_reason=incomplete,
+      no content generated") suitable for display in the UI
+    """
+    goal = _goal_for_task_index(lead_messages, delegate_tc_id, task_index)
+    if not goal:
+        return ("", "could not locate sub-agent goal in lead session")
+    data = sub_sessions_by_goal.get(goal[:60])
+    if data is None:
+        return ("", f"no sub-agent session file matched goal prefix")
+
+    msgs = data.get("messages") or []
+    # Walk assistants backwards: prefer the last one that wrote real content.
+    last_assistant_content: str = ""
+    last_finish: str = ""
+    reasoning_chunks: list[str] = []
+    for m in msgs:
+        if m.get("role") != "assistant":
+            continue
+        c = m.get("content") or ""
+        if isinstance(c, str) and c.strip():
+            last_assistant_content = c
+        last_finish = str(m.get("finish_reason") or last_finish)
+        r = m.get("reasoning")
+        if isinstance(r, str) and r.strip():
+            reasoning_chunks.append(r)
+
+    if last_assistant_content.strip():
+        return (last_assistant_content, None)
+
+    # No content; build a diagnostic.
+    parts: list[str] = []
+    if last_finish:
+        parts.append(f"finish_reason={last_finish}")
+    if reasoning_chunks:
+        total_reasoning = sum(len(x) for x in reasoning_chunks)
+        parts.append(f"{total_reasoning}b of reasoning, no content")
+    else:
+        parts.append("no reasoning either")
+    return ("", "; ".join(parts) or "sub-agent produced no content")
+
+
+def _goal_for_task_index(
+    lead_messages: list[Any], delegate_tc_id: Any, task_index: Any
+) -> str:
+    """Pull sub-question N's goal text from the lead's `delegate_task` call
+    arguments, keyed by task_index."""
+    if delegate_tc_id is None:
+        return ""
+    for m in lead_messages:
+        if m.get("role") != "assistant":
+            continue
+        for tc in m.get("tool_calls") or []:
+            if tc.get("id") != delegate_tc_id:
+                continue
+            fn = tc.get("function") or {}
+            args_raw = fn.get("arguments")
+            if isinstance(args_raw, str):
+                try:
+                    args = json.loads(args_raw)
+                except Exception:
+                    continue
+            elif isinstance(args_raw, dict):
+                args = args_raw
+            else:
+                continue
+            tasks = args.get("tasks") if isinstance(args, dict) else None
+            if not isinstance(tasks, list):
+                return ""
+            try:
+                task = tasks[int(task_index)]
+            except (IndexError, ValueError, TypeError):
+                return ""
+            if isinstance(task, dict):
+                return str(task.get("goal") or "")
     return ""
 
 

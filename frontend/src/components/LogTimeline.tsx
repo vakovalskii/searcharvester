@@ -171,6 +171,11 @@ function SubAgentCard({
 
   const messageEv = events.find((e) => e.type === "message");
   const summary = (messageEv?.payload.text as string | undefined) ?? "";
+  const doneEv = events.find((e) => e.type === "done");
+  const diagnostic =
+    (doneEv?.payload.note as string | undefined) ??
+    (doneEv?.payload.error as string | undefined) ??
+    "";
 
   return (
     <div
@@ -236,9 +241,11 @@ function SubAgentCard({
           researching…
         </div>
       )}
-      {!summary && isDone && (
+      {!summary && (isDone || isError) && (
         <div className="px-2.5 py-2 text-xs text-slate-500 italic">
-          done · summary not captured
+          {diagnostic
+            ? <>no output · <span className="font-mono text-slate-400">{diagnostic}</span></>
+            : "done · summary not captured"}
         </div>
       )}
     </div>
