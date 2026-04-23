@@ -36,29 +36,42 @@ export default function LogTimeline({ rawLog }: Props) {
   const toolCalls = events.filter((e) =>
     ["search", "extract", "write_report", "other_tool"].includes(e.kind)
   ).length;
-  const subAgents = events.filter((e) => e.kind === "delegate_start").length;
+  const batches = events.filter((e) => e.kind === "delegate_batch_end").length;
+  const subAgentsTotal = events
+    .filter((e) => e.kind === "delegate_batch_end")
+    // TS narrow
+    .reduce((n, e) => n + (e.kind === "delegate_batch_end" ? e.total : 0), 0);
+  const subAgentsOk = events.filter(
+    (e) => e.kind === "subagent_done" && !e.error
+  ).length;
+  const subAgentsFail = events.filter(
+    (e) => e.kind === "subagent_done" && e.error
+  ).length;
 
   return (
     <div className="space-y-2">
-      {(toolCalls > 0 || subAgents > 0) && (
+      {(toolCalls > 0 || subAgentsTotal > 0) && (
         <div className="flex items-start gap-2 px-2.5 py-1.5 rounded-md bg-base-800/60 border border-base-700 text-xs text-slate-400">
           <Info size={12} className="shrink-0 mt-0.5 text-slate-500" />
           <div className="leading-relaxed">
-            {subAgents > 0 ? (
+            {subAgentsTotal > 0 ? (
               <>
-                <span className="text-accent-400 font-semibold">
-                  {subAgents} parallel sub-agents
-                </span>{" "}
-                dispatched via Hermes <code className="font-mono">delegate_task</code>
-                {toolCalls > 0 && <>, {toolCalls} tool calls total across them</>}.
+                <span className="text-cyan-400 font-semibold">
+                  {batches} delegate_task batch{batches > 1 ? "es" : ""}
+                </span>
+                {", "}
+                <span className="text-cyan-300">{subAgentsTotal}</span> sub-agents
+                total
+                {subAgentsOk > 0 && <> · <span className="text-emerald-400">{subAgentsOk} ok</span></>}
+                {subAgentsFail > 0 && <> · <span className="text-red-400">{subAgentsFail} failed</span></>}
+                {toolCalls > 0 && <> · lead did <span className="text-slate-300">{toolCalls}</span> own tool calls</>}
               </>
             ) : (
               <>
                 Lead agent running{" "}
                 <span className="text-slate-300 font-semibold">{toolCalls}</span> tool
-                calls sequentially. When the skill triggers{" "}
-                <code className="font-mono">delegate_task</code>, parallel sub-agents
-                will appear here.
+                calls sequentially. No <code className="font-mono">delegate_task</code>{" "}
+                fired yet.
               </>
             )}
           </div>
@@ -145,30 +158,54 @@ function renderEvent(ev: LogEvent) {
           </div>
         </>
       );
-    case "delegate_start":
+    case "delegate_batch_start":
       return (
         <>
           <div className="shrink-0 mt-0.5 text-cyan-400">
             <Users size={14} />
           </div>
+          <div className="flex-1 min-w-0 text-cyan-400 font-semibold uppercase text-xs tracking-wider">
+            delegate_task — dispatching parallel sub-agents…
+          </div>
+        </>
+      );
+    case "subagent_done":
+      return (
+        <>
+          <div className={`shrink-0 mt-0.5 ml-4 ${ev.error ? "text-red-400" : "text-cyan-300"}`}>
+            <Users size={12} />
+          </div>
           <div className="flex-1 min-w-0">
-            <span className="text-cyan-400 font-semibold uppercase text-xs mr-2 tracking-wider">
-              sub-agent
+            <span className={`${ev.error ? "text-red-400" : "text-cyan-300"} font-semibold uppercase text-xs mr-2 tracking-wider`}>
+              sub-agent [{ev.index}/{ev.total}]
             </span>
             <span className="text-slate-200">{ev.goal}</span>
+          </div>
+          {renderDuration(ev.duration, ev.error)}
+        </>
+      );
+    case "delegate_batch_end":
+      return (
+        <>
+          <div className={`shrink-0 mt-0.5 ${ev.error ? "text-amber-400" : "text-cyan-400"}`}>
+            <CheckCircle2 size={14} />
+          </div>
+          <div className="flex-1 min-w-0 text-cyan-300/80 text-xs">
+            batch returned · <span className="text-slate-300">{ev.total}</span> sub-agents
+            {ev.error && <span className="text-amber-400"> · with errors</span>}
           </div>
           {renderDuration(ev.duration)}
         </>
       );
-    case "delegate_done":
+    case "subagent_warn":
       return (
         <>
-          <div className="shrink-0 mt-0.5 text-cyan-500">
-            <CheckCircle2 size={14} />
+          <div className="shrink-0 mt-0.5 ml-4 text-amber-400">
+            <AlertTriangle size={11} />
           </div>
-          <div className="flex-1 min-w-0 text-cyan-300/80 text-xs">
-            sub-agent returned
-            {ev.goal ? <span className="text-slate-500"> · {ev.goal}</span> : null}
+          <div className="flex-1 min-w-0 text-amber-300/70 text-xs">
+            <span className="font-mono text-xs text-slate-500 mr-1.5">{ev.subagent}</span>
+            {ev.text}
           </div>
         </>
       );

@@ -19,8 +19,11 @@
 export type LogEvent =
   | { kind: "orch_spawn"; text: string }        // orchestrator spawned the agent container
   | { kind: "agent_init"; text: string }        // Hermes runtime booting
-  | { kind: "delegate_start"; goal: string; duration?: string } // lead → sub-agent
-  | { kind: "delegate_done"; goal?: string }   // sub-agent returned
+  // delegate_task — the lead fires a parallel batch of sub-agents
+  | { kind: "delegate_batch_start" }            // "  ┊ 🔀 preparing delegate_task…"
+  | { kind: "subagent_done"; index: number; total: number; goal: string; duration: string; error: boolean }
+  | { kind: "delegate_batch_end"; total: number; duration: string; error: boolean }
+  | { kind: "subagent_warn"; subagent: string; text: string }  // per-child truncation/retry
   | { kind: "search"; query: string; maxResults?: number; duration?: string; error?: boolean }
   | { kind: "extract"; url: string; size?: string; duration?: string; error?: boolean }
   | { kind: "write_report"; duration?: string }
@@ -44,12 +47,19 @@ const API_RETRY_RE =
 const WAITING_RETRY_RE =
   /^⏳\s*Retrying in (\d+(?:\.\d+)?)s/;
 
-// Hermes prints delegate_task tool calls like:
-//   ┊ 🤖 $ delegate_task(goal="...", ...)   1.2s
-// or with the function-call style:
-//   ┊ 🤖 $ delegate_task goal="Research sub-question 1"   45.3s
-const DELEGATE_RE =
-  /^\s*┊\s*🤖\s*\$\s*delegate_task[ (]goal\s*=\s*"([^"]+)"[^\n]*?(\d+(?:\.\d+)?s)?\s*$/;
+// Hermes prints delegate_task lifecycle with the 🔀 glyph:
+//   ┊ 🔀 preparing delegate_task…
+//   ✓ [2/4] Research sub-question 2: Какова архитект  (67.47s)
+//   ✗ [3/3] Find additional public benchmark compari  (9.91s)
+//   ┊ 🔀 delegate  4 parallel tasks  81.7s [error]
+//   [subagent-2] ⚠️  Response truncated (finish_reason='length') ...
+const DELEGATE_BATCH_START_RE = /^\s*┊\s*🔀\s*preparing delegate_task/;
+const SUBAGENT_DONE_RE =
+  /^\s*([✓✗])\s*\[(\d+)\/(\d+)\]\s*(.+?)\s*\((\d+(?:\.\d+)?s)\)\s*$/;
+const DELEGATE_BATCH_END_RE =
+  /^\s*┊\s*🔀\s*delegate\s+(\d+)\s+parallel tasks\s+(\d+(?:\.\d+)?s)(?:\s*(\[error\]))?\s*$/;
+const SUBAGENT_WARN_RE =
+  /^\s*\[(subagent-\d+)\]\s*⚠️\s*(.+?)\s*$/;
 
 export function parseHermesLog(raw: string): LogEvent[] {
   if (!raw) return [];
@@ -83,9 +93,38 @@ export function parseHermesLog(raw: string): LogEvent[] {
     if (line.includes("preparing searcharvester")) continue;
 
     // Order matters: specific tool shapes before OTHER_TOOL fallback.
-    let m = line.match(DELEGATE_RE);
+    if (DELEGATE_BATCH_START_RE.test(line)) {
+      out.push({ kind: "delegate_batch_start" });
+      continue;
+    }
+
+    let m = line.match(DELEGATE_BATCH_END_RE);
     if (m) {
-      out.push({ kind: "delegate_start", goal: m[1], duration: m[2] });
+      out.push({
+        kind: "delegate_batch_end",
+        total: parseInt(m[1], 10),
+        duration: m[2],
+        error: !!m[3],
+      });
+      continue;
+    }
+
+    m = line.match(SUBAGENT_DONE_RE);
+    if (m) {
+      out.push({
+        kind: "subagent_done",
+        index: parseInt(m[2], 10),
+        total: parseInt(m[3], 10),
+        goal: m[4].trim(),
+        duration: m[5],
+        error: m[1] === "✗",
+      });
+      continue;
+    }
+
+    m = line.match(SUBAGENT_WARN_RE);
+    if (m) {
+      out.push({ kind: "subagent_warn", subagent: m[1], text: m[2] });
       continue;
     }
 
