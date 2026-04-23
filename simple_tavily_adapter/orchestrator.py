@@ -37,37 +37,33 @@ EVENTS_FILENAME = "events.jsonl"
 # Appended to every user query. Keeps the agent honest about where the final
 # report lives and nudges it away from reflexive refusals on legitimate
 # public-web research tasks.
-MANDATORY_SUFFIX = """
+def _mandatory_suffix() -> str:
+    """Prompt suffix — kept short. Defers detail to the
+    searcharvester-deep-research skill."""
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return f"""
 
 ---
-IMPORTANT — Role + output contract (applies to every task, no exceptions):
+CONTEXT — today's date is {today}. Your training data is older than
+this, so anything you "know" about records, counts, versions, or
+current holders may be outdated. TRUST SOURCES OVER MEMORY.
 
-ROLE: You are the LEAD researcher of a deep-research pipeline. For EVERY
-query — even questions that look simple or factual — you MUST follow the
-searcharvester-deep-research methodology:
+INSTRUCTIONS — use the `searcharvester-deep-research` skill, which
+dispatches a role-based team (2–3 researchers + 1 critic + 1
+fact-checker) in a single delegate_task batch. Do not skip the critic
+— they exist to catch stale / contested answers. Do not skip the
+fact-checker for any query with numbers or dates.
 
-1. Decompose the question into 3–5 concrete sub-questions.
-2. Fire ONE delegate_task call with tasks=[...] containing all sub-questions
-   in a single batch (so the sub-agents run in parallel). Each task gets
-   toolsets=["terminal"] and the context template from the skill.
-3. When delegate_task returns, synthesise the sub-agents' findings into a
-   cited markdown report.
+Output: `./report.md` (relative path), following the skill's format.
+The report must reflect the critic's verdict — if they found the
+obvious answer was superseded, the new answer wins."""
 
-RULES:
-- Do NOT run searcharvester-search or searcharvester-extract yourself.
-  Those are for the sub-agents, not you.
-- Do NOT answer from your own training knowledge. Every factual claim in
-  the final report must come from a source a sub-agent extracted.
-- Do NOT skip delegate_task — even for "who won X" style questions. If
-  you catch yourself about to answer directly, stop and delegate instead.
-- The searcharvester-deep-research skill is mandatory; load it via the
-  skill tool at the start of every run.
 
-OUTPUT: Your working directory is already the job workspace. Write the
-final report as markdown to `./report.md` (relative path — do not use
-/workspace/, that path does not exist). This file is what the user sees.
-The report must have a TL;DR, findings with inline [n] citations, and a
-References section listing every URL the sub-agents cited."""
+# Keep the module-level constant for back-compat but it's evaluated once
+# per module import; the orchestrator uses _mandatory_suffix() at send
+# time so the date stays fresh on long-running containers.
+MANDATORY_SUFFIX = _mandatory_suffix()
 
 
 class JobStatus(str, Enum):
@@ -363,10 +359,12 @@ class Orchestrator:
             # Simpler: shove skills load into the query text itself (agent reads
             # SKILL.md when it sees the name). That matches chat-mode behaviour.
             skills_hint = ", ".join(self._skills)
+            # Build suffix per-call so the current-date hint stays fresh
+            # even on long-running containers.
             wrapped = (
                 f"Use these skills: {skills_hint}.\n\n"
                 f"{query}"
-                f"{MANDATORY_SUFFIX}"
+                f"{_mandatory_suffix()}"
             )
 
             prompt_task = asyncio.create_task(
@@ -507,10 +505,21 @@ class Orchestrator:
                             summary = recovered
                         if diag:
                             diagnostic = diag
-                            # If the model didn't produce any content, the
-                            # sub effectively failed — surface that.
                             if not recovered:
                                 used_status = "failed"
+
+                    # Validate grounding: a sub-agent with no URL citations
+                    # in its output is writing from memory, not from
+                    # extractions. Mark it as failed + diagnostic so the UI
+                    # surfaces that and the lead's synthesis becomes
+                    # questionable.
+                    url_count = _count_urls(summary)
+                    if url_count < 2 and summary:
+                        diagnostic = (
+                            f"ungrounded: {url_count} URLs in output "
+                            "(likely answered from training memory, not web sources)"
+                        )
+                        used_status = "failed"
 
                     if summary and sub_id not in message_sub_ids:
                         await self._emit(job, Event.now(
@@ -685,6 +694,19 @@ _USELESS_SUMMARIES = {"", "(empty)", "none", "null", "n/a", "na"}
 def _is_useless_summary(s: str) -> bool:
     """Detect Hermes' placeholder for a sub-agent that returned no content."""
     return s.strip().lower() in _USELESS_SUMMARIES or len(s.strip()) < 6
+
+
+def _count_urls(text: str) -> int:
+    """Count unique http(s) URLs in a sub-agent's output — a proxy for
+    "did this agent actually cite sources it extracted?" Zero URLs means
+    the agent wrote a narrative from memory, which is exactly what the
+    deep-research skill forbids.
+    """
+    if not text:
+        return 0
+    import re
+    urls = re.findall(r"https?://[^\s)\]\"'<>]+", text)
+    return len(set(urls))
 
 
 def _index_sub_sessions(
