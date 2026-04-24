@@ -49,15 +49,18 @@ CONTEXT — today's date is {today}. Your training data is older than
 this, so anything you "know" about records, counts, versions, or
 current holders may be outdated. TRUST SOURCES OVER MEMORY.
 
-INSTRUCTIONS — use the `searcharvester-deep-research` skill, which
-dispatches a role-based team (2–3 researchers + 1 critic + 1
-fact-checker) in a single delegate_task batch. Do not skip the critic
-— they exist to catch stale / contested answers. Do not skip the
-fact-checker for any query with numbers or dates.
+INSTRUCTIONS — use the `searcharvester-deep-research` skill. It runs a
+two-round pipeline:
+  Round 1: delegate_task([researchers...])  — 2–3 researchers in parallel
+  Round 2: delegate_task([critic, fact-checker])  — with the
+           researchers' findings handed in as context
+Then you (the lead) synthesise a cited report.
 
-Output: `./report.md` (relative path), following the skill's format.
-The report must reflect the critic's verdict — if they found the
-obvious answer was superseded, the new answer wins."""
+Do NOT try to answer the question yourself between rounds; your only
+job is to read each round's JSON, decide what context the next round
+needs, and fire the next delegate_task.
+
+Output: `./report.md` (relative path), following the skill's format."""
 
 
 # Keep the module-level constant for back-compat but it's evaluated once

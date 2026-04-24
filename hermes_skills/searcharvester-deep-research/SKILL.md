@@ -83,14 +83,18 @@ cat > ./plan.md << 'EOF'
 EOF
 ```
 
-### Phase 2 — Dispatch ONE batch with explicit roles (lead)
+### Phase 2 — Two-round pipeline (lead)
 
-Call `delegate_task` ONCE with a team like this:
+The team runs in TWO delegate_task rounds, not one big batch. The
+second round sees what the first round produced. Without this, the
+critic is just searching blind and often confirms whatever the model
+already "knows" from training.
+
+#### Round 1 — Researchers only (parallel)
 
 ```python
 delegate_task(
     tasks=[
-        # Researchers — 2 to 3 of them, one per sub-question
         {
             "goal": "Researcher: sub-question 1 — <sub-question text>",
             "context": RESEARCHER_TEMPLATE.replace("<SUBQ>", "<q1>").replace("<USER_QUERY>", user_query),
@@ -101,21 +105,59 @@ delegate_task(
             "context": RESEARCHER_TEMPLATE.replace("<SUBQ>", "<q2>").replace("<USER_QUERY>", user_query),
             "toolsets": ["terminal"],
         },
-        # Critic — searches for contradictions / alternative answers
+        # 2 to 3 researchers, one per sub-question
+    ],
+)
+```
+
+Wait for the results. Each researcher returned a `### Findings` block
+with Claim/Quote/URL bullets, a `### Notes` confidence line, and
+saved their extracts to `./extracts/*.md`.
+
+#### Between rounds — Prepare critic/fact-checker context (lead)
+
+Collect the researchers' claims and facts. Write a short
+`### Researcher summary` — one line per researcher, listing the top
+claim + URL — plus a `### Facts to verify` list extracting every
+number, date, name, and record-count the researchers stated.
+
+This block goes into the critic's and fact-checker's context so they
+can target SPECIFIC claims instead of searching blind.
+
+#### Round 2 — Critic + Fact-checker (parallel, but with Round 1 in context)
+
+```python
+delegate_task(
+    tasks=[
         {
-            "goal": "Critic: try to disprove the obvious answer",
-            "context": CRITIC_TEMPLATE.replace("<USER_QUERY>", user_query),
+            "goal": "Critic: attack the researchers' conclusions",
+            "context": (
+                CRITIC_TEMPLATE
+                  .replace("<USER_QUERY>", user_query)
+                  .replace("<RESEARCHER_SUMMARY>", researcher_summary_block)
+            ),
             "toolsets": ["terminal"],
         },
-        # Fact-checker — verifies specific numbers / dates / names
         {
-            "goal": "Fact-checker: verify key numeric claims",
-            "context": FACT_CHECKER_TEMPLATE.replace("<USER_QUERY>", user_query).replace("<FACTS>", "<list from plan>"),
+            "goal": "Fact-checker: verify specific claims",
+            "context": (
+                FACT_CHECKER_TEMPLATE
+                  .replace("<USER_QUERY>", user_query)
+                  .replace("<FACTS>", facts_to_verify_block)
+            ),
             "toolsets": ["terminal"],
         },
     ],
 )
 ```
+
+The critic now has concrete claims to challenge. The fact-checker has
+the exact numbers to verify. They can `cat ./extracts/<id>.md` to
+re-read the same extracts the researchers pulled (shared workspace).
+
+Exactly two rounds. Do not fire a third. If a claim still looks
+shaky after round 2, surface it in the report's "Disagreements"
+section instead of starting another batch.
 
 ---
 
@@ -185,33 +227,42 @@ IF YOUR OUTPUT HAS FEWER THAN 4 URLs YOU HAVE FAILED.
 ### Template: CRITIC
 
 ```
-ROLE: Critic. Your job is to DISPROVE the obvious answer to the user's
-query, or to show that the obvious answer is outdated / contested /
-more nuanced than it appears. Assume the common / first-hit answer is
-wrong until you have evidence that it's still right.
+ROLE: Critic. You have CONCRETE claims to attack — this is round 2.
+The researchers already gathered evidence; your job is to check
+whether they were right, or whether the real answer is different,
+outdated, or more nuanced.
 
 USER QUERY:
 "<USER_QUERY>"
 
+WHAT THE RESEARCHERS FOUND (attack THESE specifically, not the
+question in the abstract):
+<RESEARCHER_SUMMARY>
+
 TOOLS: Same as researcher — terminal + searcharvester-search/extract
 scripts (extract saves to `./extracts/<id>.md`; use grep/head to read
-specific sections).
+specific sections). You can ALSO `cat ./extracts/<id>.md` to re-read
+any extract the researchers already pulled — the workspace is shared.
 
-HARD RULE: Your FIRST action is a search.py call with one of these
-phrasings (pick what fits):
-  - "<topic> record superseded"
-  - "<topic> outdated"
-  - "<topic> NOT <obvious answer>"
-  - "<topic> corrections" / "<topic> debate"
-  - For record-holder questions: search the CHALLENGER, not the
-    incumbent. e.g. if query is "most X", search for "2024 most X
-    champion" or names of recent competitors.
+HARD RULE: Your FIRST action is a search.py call targeting a
+SPECIFIC researcher claim. For each claim in <RESEARCHER_SUMMARY>,
+ask yourself: "what would falsify this?" and search for THAT.
+Examples:
+  - Researcher says "Artist X has N wins" → search "<artist X> N+1
+    wins" and "<artist X> most recent <award> win <current year>".
+  - Researcher says "version released in <month> <year>" → search
+    "<product> release history <year+1>".
+  - Researcher says "record holder: X" → search "<award> current
+    record holder <current year>" and look for names other than X.
 
 METHOD:
-1. Run 3–5 adversarial search.py calls.
-2. Extract 2–4 URLs that either (a) show a different answer or
-   (b) confirm the obvious answer despite the adversarial framing.
-3. Extract full content, not just snippets — headlines lie.
+1. Run 3–5 adversarial search.py calls derived from the concrete
+   claims (not generic "X debate" searches).
+2. Extract 2–4 URLs. Prefer primary sources (official site of the
+   governing body) over news aggregators.
+3. Read each extract from disk (`cat ./extracts/<id>.md | grep ...`) —
+   the researchers' extracts are already there; you can re-read them
+   before pulling new URLs.
 
 RETURN FORMAT:
 ### Counter-evidence
@@ -242,7 +293,7 @@ related to the user's query. Your job is precision, not breadth.
 USER QUERY:
 "<USER_QUERY>"
 
-FACTS TO VERIFY (from the lead's plan):
+FACTS TO VERIFY (derived from round-1 researcher findings):
 <FACTS>
 
 TOOLS: Same as researcher (extract saves to `./extracts/<id>.md`; use

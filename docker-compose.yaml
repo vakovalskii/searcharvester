@@ -59,7 +59,7 @@ services:
       - JOBS_DIR=/srv/searxng-docker/jobs
       - HERMES_HOME=/opt/data
       - ADAPTER_URL_FOR_HERMES=http://localhost:8000
-      - RESEARCH_TIMEOUT_SEC=900
+      - RESEARCH_TIMEOUT_SEC=1200
       # Match the UID of the repo owner so mounted files stay owned by
       # the right user. macOS: 501:20 is typical; override in .env if needed.
       - HERMES_UID=${HERMES_UID:-501}
