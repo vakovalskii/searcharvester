@@ -60,6 +60,14 @@ Do NOT try to answer the question yourself between rounds; your only
 job is to read each round's JSON, decide what context the next round
 needs, and fire the next delegate_task.
 
+CRITICAL — when building the `context` string for EVERY sub-agent
+task in EVERY delegate_task call, the FIRST line of context must be:
+
+    Today's date is {today}. Search for sources from {today[:4]} when possible.
+
+Sub-agents have stale training data too — without this preamble they
+search for "latest 2024" news in {today[:4]} and miss everything new.
+
 Output: `./report.md` (relative path), following the skill's format."""
 
 
@@ -377,6 +385,16 @@ class Orchestrator:
                 )
             )
 
+            # Live watcher: every few seconds, scan the lead's session file
+            # for delegate_task tool_results and emit message/done events for
+            # any sub-agents we haven't surfaced yet. ACP truncates each
+            # tool_result content to ~2000 chars, so when a batch returns 5
+            # sub-agent summaries only the first survives the wire — without
+            # this loop, subs 2..N stay LIVE in the UI until the very end.
+            watcher_task = asyncio.create_task(
+                self._watch_subagents(job, session.session_id)
+            )
+
             try:
                 await asyncio.wait_for(prompt_task, timeout=self._timeout)
             except asyncio.TimeoutError:
@@ -389,10 +407,18 @@ class Orchestrator:
                 job.status = JobStatus.timeout
                 await self._notify(job)
                 return
+            finally:
+                # Watcher cancellation is in finally so it runs on both
+                # success and timeout paths. Double-cancel after return is
+                # harmless.
+                watcher_task.cancel()
+                try:
+                    await watcher_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
-            # Prompt returned. Before finalising, backfill any sub-agent
-            # events that ACP truncated away (it caps tool_result content
-            # around 2000 chars, so subs past index ~1 silently hang).
+            # Prompt returned. Final backfill pass — picks up anything the
+            # watcher loop missed in its last 3-second window.
             await self._backfill_subagents(job, session.session_id)
 
             await self._finalize_success(job)
@@ -419,6 +445,30 @@ class Orchestrator:
             job.finished_at = datetime.now(timezone.utc)
             if job.started_at:
                 job.duration_sec = (job.finished_at - job.started_at).total_seconds()
+
+    async def _watch_subagents(self, job: Job, session_id: str) -> None:
+        """Live polling loop: while the prompt is in flight, scan the lead's
+        session file every few seconds and emit any sub-agent events the
+        ACP stream dropped (truncated content past the first task).
+
+        Without this, sub-agents 2..N from a batch sit at "researching..."
+        in the UI until the very end. With it, they flip to DONE as soon as
+        Hermes writes their summary into the session file (usually within
+        a second or two of the actual sub-agent finishing).
+        """
+        try:
+            while True:
+                # Sleep first — the session file isn't created until after
+                # `new_session`, and the first delegate_task takes a while
+                # to land. 3s is a sensible balance: fast enough to feel
+                # live, slow enough not to spam disk.
+                await asyncio.sleep(3.0)
+                try:
+                    await self._backfill_subagents(job, session_id)
+                except Exception:
+                    logger.debug("watcher backfill tick failed", exc_info=True)
+        except asyncio.CancelledError:
+            raise
 
     async def _backfill_subagents(self, job: Job, session_id: str) -> None:
         """Read the lead's Hermes session file on disk and emit `message` +
