@@ -561,11 +561,12 @@ class Orchestrator:
                             if not recovered:
                                 used_status = "failed"
 
-                    # Validate grounding: a sub-agent with no URL citations
-                    # in its output is writing from memory, not from
-                    # extractions. Mark it as failed + diagnostic so the UI
-                    # surfaces that and the lead's synthesis becomes
-                    # questionable.
+                    # Validate grounding two ways:
+                    # 1. Are there URLs in the output at all?
+                    # 2. For each URL, does a corresponding ./extracts/<id>.md
+                    #    file exist on disk (i.e. did the sub-agent ACTUALLY
+                    #    run extract.py, or did it just write a plausible URL
+                    #    from memory)?
                     url_count = _count_urls(summary)
                     if url_count < 2 and summary:
                         diagnostic = (
@@ -573,6 +574,25 @@ class Orchestrator:
                             "(likely answered from training memory, not web sources)"
                         )
                         used_status = "failed"
+                    elif summary and job.workspace_path:
+                        extracts_dir = job.workspace_path / "extracts"
+                        cited_urls = _extract_unique_urls(summary)
+                        verified, missing = _verify_urls_against_extracts(
+                            cited_urls, extracts_dir
+                        )
+                        if verified == 0 and len(missing) > 0:
+                            diagnostic = (
+                                f"hallucinated URLs: {len(missing)} cited but "
+                                "0 corresponding extract files on disk "
+                                "(sub-agent wrote URLs without running extract.py)"
+                            )
+                            used_status = "failed"
+                        elif missing and verified > 0:
+                            diagnostic = (
+                                f"partial: {verified} URLs verified by extracts, "
+                                f"{len(missing)} cited without extract files"
+                            )
+                            # still completed — not a hard fail, just noted
 
                     if summary and sub_id not in message_sub_ids:
                         await self._emit(job, Event.now(
@@ -755,11 +775,46 @@ def _count_urls(text: str) -> int:
     the agent wrote a narrative from memory, which is exactly what the
     deep-research skill forbids.
     """
+    return len(_extract_unique_urls(text))
+
+
+def _extract_unique_urls(text: str) -> set[str]:
+    """Pull every distinct http(s) URL out of a markdown blob."""
     if not text:
-        return 0
+        return set()
     import re
-    urls = re.findall(r"https?://[^\s)\]\"'<>]+", text)
-    return len(set(urls))
+    return set(re.findall(r"https?://[^\s)\]\"'<>]+", text))
+
+
+def _verify_urls_against_extracts(
+    urls: set[str], extracts_dir: Path
+) -> tuple[int, list[str]]:
+    """For each URL, check whether ./extracts/<md5(url)[:16]>.md exists —
+    that's the file extract.py writes when the sub-agent actually ran it.
+    Returns (verified_count, list_of_unverified_urls).
+
+    A sub-agent that writes "I extracted https://example.com/foo" but
+    never ran `extract.py --url ...` will have a URL with no matching
+    file → flagged as hallucinated.
+    """
+    import hashlib
+    if not extracts_dir.exists():
+        # No extracts dir at all → no URL was actually extracted
+        return (0, sorted(urls))
+    verified = 0
+    missing: list[str] = []
+    for url in urls:
+        # Strip trailing punctuation that the regex sometimes captures
+        clean = url.rstrip(".,;:!?]")
+        h = hashlib.md5(clean.encode("utf-8")).hexdigest()[:16]
+        # Also try the un-stripped form, since extract.py might key on the
+        # exact passed string
+        h_raw = hashlib.md5(url.encode("utf-8")).hexdigest()[:16]
+        if (extracts_dir / f"{h}.md").exists() or (extracts_dir / f"{h_raw}.md").exists():
+            verified += 1
+        else:
+            missing.append(url)
+    return (verified, missing)
 
 
 def _index_sub_sessions(
