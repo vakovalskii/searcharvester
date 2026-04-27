@@ -764,21 +764,22 @@ def _count_urls(text: str) -> int:
 
 def _index_sub_sessions(
     sess_dir: Path, lead_session_id: str
-) -> dict[str, dict[str, Any]]:
-    """Map first-user-message prefix → sub-agent session data, scoped to the
-    window around when the lead session was last updated.
+) -> list[tuple[str, dict[str, Any]]]:
+    """Return [(first_user_content, session_data), ...] for sub-agent sessions
+    in the time window around the lead session's mtime.
 
-    Sub-agent sessions are timestamp-named files like
-    session_20260423_083028_550f93.json; the lead is UUID-named. We skip
-    the lead file and anything whose first message doesn't look like a
-    sub-question prompt."""
-    out: dict[str, dict[str, Any]] = {}
+    Returned as a list (not dict) because we now match goals by substring,
+    not equality — the lead's `tasks[].goal` is a short string like
+    "Researcher: sub-question 1 — ..." but the sub-session's first message
+    is the full context (which the lead prepends "Today's date is..." to).
+    Equality keying broke after the date-injection change.
+    """
+    out: list[tuple[str, dict[str, Any]]] = []
     lead_path = sess_dir / f"session_{lead_session_id}.json"
     try:
         lead_mtime = lead_path.stat().st_mtime
     except Exception:
         return out
-    import time
     window = 1800  # 30 min — ample for multi-batch deep research
     for p in sess_dir.glob("session_*.json"):
         if p == lead_path:
@@ -799,17 +800,15 @@ def _index_sub_sessions(
         first = msgs[0]
         if first.get("role") != "user":
             continue
-        goal_text = str(first.get("content") or "").strip()
-        if not goal_text:
+        content = str(first.get("content") or "").strip()
+        if not content:
             continue
-        # Use a 60-char prefix as the key — robust to truncation on either end.
-        key = goal_text[:60]
-        out[key] = data
+        out.append((content, data))
     return out
 
 
 def _recover_from_sub_session(
-    sub_sessions_by_goal: dict[str, dict[str, Any]],
+    sub_sessions: list[tuple[str, dict[str, Any]]],
     task_index: Any,
     lead_messages: list[Any],
     delegate_tc_id: Any,
@@ -817,16 +816,27 @@ def _recover_from_sub_session(
     """Try to fish out the sub-agent's real content when Hermes logged
     "(empty)". Returns (recovered_summary, diagnostic_note).
 
-    - recovered_summary: empty if we couldn't find one
-    - diagnostic_note: human-readable reason (e.g. "finish_reason=incomplete,
-      no content generated") suitable for display in the UI
+    Matches sub-session by checking whether the lead's `tasks[idx].goal`
+    string is a substring of the sub-session's first user message. This
+    handles the case where the lead prepends extra preamble (today's date
+    line, skill hints) to the context — equality matching on the first
+    60 chars used to break in that scenario.
     """
     goal = _goal_for_task_index(lead_messages, delegate_tc_id, task_index)
     if not goal:
         return ("", "could not locate sub-agent goal in lead session")
-    data = sub_sessions_by_goal.get(goal[:60])
+    # Use the most distinctive ~80 chars of the goal as the search anchor.
+    # Goals usually look like "Researcher: sub-question 1 — <unique text>",
+    # so a substring match gives us specificity without breaking on minor
+    # whitespace / punctuation differences.
+    anchor = goal[:80].strip()
+    data = None
+    for content, sess in sub_sessions:
+        if anchor in content:
+            data = sess
+            break
     if data is None:
-        return ("", f"no sub-agent session file matched goal prefix")
+        return ("", "no sub-agent session file matched goal prefix")
 
     msgs = data.get("messages") or []
     # Walk assistants backwards: prefer the last one that wrote real content.
