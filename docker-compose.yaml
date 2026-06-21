@@ -67,6 +67,8 @@ services:
       # LLM credentials — pass-through from the invoking shell / .env.
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - EVOLINK_API_KEY=${EVOLINK_API_KEY:-}
+      - EVOLINK_BASE_URL=${EVOLINK_BASE_URL:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
