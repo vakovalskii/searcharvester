@@ -28,6 +28,7 @@ cat > .env <<EOF
 OPENAI_API_KEY=sk-...
 OPENAI_BASE_URL=https://api.openai.com/v1
 EOF
+# EvoLink also works directly with EVOLINK_API_KEY (base URL defaults to https://direct.evolink.ai/v1).
 
 # 4. Start — pulls ghcr.io/vakovalskii/searcharvester
 docker compose up -d

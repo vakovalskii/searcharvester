@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Searcharvester", version="2.2.0")
 
+EVOLINK_BASE_URL = "https://direct.evolink.ai/v1"
+
 # ---------- CORS ----------
 # Frontend dev server is on :9762. Prod build served by the same origin or
 # another port the user runs — allow anything on localhost by default, tighten
@@ -58,6 +60,28 @@ app.add_middleware(
 
 # ---------- Orchestrator singleton ----------
 
+
+def _llm_env() -> dict[str, str]:
+    pass_env_keys = [
+        "OPENAI_API_KEY", "OPENAI_BASE_URL",
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY", "GOOGLE_API_KEY",
+        "OLLAMA_API_KEY", "OLLAMA_BASE_URL",
+        "NOUS_API_KEY",
+    ]
+    env = {k: os.environ[k] for k in pass_env_keys if k in os.environ}
+
+    if "EVOLINK_API_KEY" in os.environ:
+        env.setdefault("OPENAI_API_KEY", os.environ["EVOLINK_API_KEY"])
+        env.setdefault(
+            "OPENAI_BASE_URL",
+            os.environ.get("EVOLINK_BASE_URL", EVOLINK_BASE_URL),
+        )
+
+    return env
+
+
 def _build_orchestrator() -> Orchestrator | None:
     """Build Orchestrator. v2.2+ runs `hermes acp` as a subprocess in the same
     container, so there's no Docker-daemon prereq. Returns None only if the
@@ -71,16 +95,6 @@ def _build_orchestrator() -> Orchestrator | None:
     jobs_dir = FSPath(os.environ.get("JOBS_DIR", "/srv/searxng-docker/jobs"))
     jobs_dir.mkdir(parents=True, exist_ok=True)
 
-    pass_env_keys = [
-        "OPENAI_API_KEY", "OPENAI_BASE_URL",
-        "OPENROUTER_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "GEMINI_API_KEY", "GOOGLE_API_KEY",
-        "OLLAMA_API_KEY", "OLLAMA_BASE_URL",
-        "NOUS_API_KEY",
-    ]
-    env = {k: os.environ[k] for k in pass_env_keys if k in os.environ}
-
     return Orchestrator(
         hermes_bin=hermes_bin,
         skills=[
@@ -89,7 +103,7 @@ def _build_orchestrator() -> Orchestrator | None:
             "searcharvester-extract",
         ],
         jobs_dir=jobs_dir,
-        env=env,
+        env=_llm_env(),
         adapter_url_for_hermes=os.environ.get(
             "ADAPTER_URL_FOR_HERMES", "http://localhost:8000"
         ),
