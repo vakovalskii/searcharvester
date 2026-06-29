@@ -314,6 +314,72 @@ Harness in [`bench/`](bench/).
 | 🎛 Search sources | Opaque | You control the engines |
 | 🤖 Deep research | Add-on product | Built-in via `/research` |
 
+## MCP
+
+The adapter exposes four tools via the Model Context Protocol:
+
+| Tool | What it does |
+|---|---|
+| `searcharvester_search` | Web search via SearXNG — returns ranked results with titles, URLs, and snippets. Optional `engines` param to target specific backends. |
+| `searcharvester_extract` | Fetches one or more URLs in parallel and returns clean markdown (navigation and ads stripped) |
+| `searcharvester_extract_page` | Reads a subsequent page of a long extracted document — requires an `id` from a prior `searcharvester_extract` call with `size=f` |
+| `searcharvester_research` | Deep multi-source research — searches, extracts, synthesises a cited markdown report (takes minutes) |
+
+Two transports are supported: **HTTP** (recommended for Docker deployments) and **stdio** (for clients that manage the server process themselves).
+
+### HTTP transport
+
+The MCP endpoint is at `http://localhost:8000/mcp/`.
+
+**Claude Code:**
+```bash
+claude mcp add --transport http searcharvester http://localhost:8000/mcp/
+```
+
+**`mcp.json` / `claude_desktop_config.json`:**
+```json
+{
+  "mcpServers": {
+    "searcharvester": {
+      "type": "http",
+      "url": "http://localhost:8000/mcp/"
+    }
+  }
+}
+```
+
+**DNS rebinding protection** is on by default — only `Host` headers matching `localhost` or `127.0.0.1` are accepted. Override with `MCP_ALLOWED_HOSTS` (comma-separated, `host:*` wildcards supported):
+```bash
+MCP_ALLOWED_HOSTS=myserver.internal,myserver.internal:* docker compose up -d
+```
+
+### stdio transport
+
+Set `MCP_TRANSPORT=stdio` to run the adapter as a stdio MCP subprocess instead of an HTTP server. Use this with clients (e.g. Claude Desktop) that spawn the server process themselves.
+
+With the Docker stack already running, point the client at the existing container:
+
+```json
+{
+  "mcpServers": {
+    "searcharvester": {
+      "command": "docker",
+      "args": [
+        "exec", "-i",
+        "-e", "MCP_TRANSPORT=stdio",
+        "tavily-adapter",
+        "/opt/hermes/.venv/bin/python",
+        "/app/main.py"
+      ]
+    }
+  }
+}
+```
+
+> Note: in stdio mode the HTTP API (`/search`, `/extract`, `/research`) is not served — only the MCP tools are available. The `/research` tool still works because the orchestrator is initialised in the same process.
+
+---
+
 ## ⚙️ Configuration
 
 `config.yaml` — single file, shared by SearXNG and the adapter. See [CONFIG_SETUP.md](CONFIG_SETUP.md) and [`docs/en/getting-started.md`](docs/en/getting-started.md).

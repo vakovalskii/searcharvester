@@ -1,6 +1,7 @@
 """
 Configuration loader for Tavily adapter
 """
+import os
 import yaml
 from pathlib import Path
 from typing import Dict, Any
@@ -31,7 +32,10 @@ class Config:
     
     @property
     def searxng_url(self) -> str:
-        return self._config.get("adapter", {}).get("searxng_url", "http://searxng:8080")
+        return (
+            os.environ.get("SEARXNG_URL")
+            or self._config.get("adapter", {}).get("searxng_url", "http://searxng:8080")
+        )
     
     @property
     def server_host(self) -> str:
