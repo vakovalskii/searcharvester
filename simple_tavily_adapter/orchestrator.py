@@ -150,6 +150,7 @@ class Orchestrator:
         timeout_sec: int = 600,
         hermes_home: str | None = None,
         max_concurrent: int = 12,
+        acp_init_timeout: float = 60,
     ) -> None:
         """
         hermes_bin: path to `hermes` executable (must be in $PATH of this process).
@@ -174,6 +175,7 @@ class Orchestrator:
         # as "queued". One process takes ~200 MB at start and the gateway key has a
         # parallel cap; past either limit jobs die (OOM) or turn into 429s.
         self._slots = asyncio.Semaphore(max(1, max_concurrent))
+        self._acp_init_timeout = acp_init_timeout
 
     # ---------- public API ----------
 
@@ -450,9 +452,9 @@ class Orchestrator:
                     title="Searcharvester Orchestrator",
                     version="2.2.0",
                 ),
-            ), timeout=60)
+            ), timeout=self._acp_init_timeout)
             session = await _race_proc(
-                proc_exit, conn.new_session(mcp_servers=[], cwd=str(job.workspace_path)), timeout=60)
+                proc_exit, conn.new_session(mcp_servers=[], cwd=str(job.workspace_path)), timeout=self._acp_init_timeout)
 
             # Preload skills via slash-command prompt prefix — `hermes acp` honours
             # the same `--skills` contract through the /skills slash command.
