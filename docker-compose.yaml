@@ -21,7 +21,9 @@ services:
     networks:
       - searxng
     ports:
-      - "0.0.0.0:8999:8080"
+      # Local only: SearXNG runs with limiter off, so a public port is an open
+      # search proxy for anyone. Put a reverse proxy with auth in front if needed.
+      - "127.0.0.1:8999:8080"
     volumes:
       - ./config.yaml:/etc/searxng/settings.yml:ro
       - searxng-data:/var/cache/searxng:rw
@@ -42,11 +44,15 @@ services:
     image: ghcr.io/vakovalskii/searcharvester:latest
     build: ./simple_tavily_adapter
     container_name: tavily-adapter
+    # tini as PID 1: reaps the orphans agents' shell commands leave behind
+    # (uvicorn as PID 1 does not, zombies piled up) and forwards signals.
+    init: true
     restart: unless-stopped
     networks:
       - searxng
     ports:
-      - "8000:8000"
+      # Local only: /research runs an agent with a shell. ADAPTER_PORT if 8000 is taken.
+      - "127.0.0.1:${ADAPTER_PORT:-8000}:8000"
     volumes:
       - ./config.yaml:/srv/searxng-docker/config.yaml:ro
       # Per-job workspaces (plan.md, notes.md, report.md, hermes.log,
@@ -55,11 +61,16 @@ services:
       # HERMES_HOME — config.yaml, SOUL.md, skills. Bundled skills get
       # synced on boot; our 3 custom skills ship alongside in skills/.
       - ./hermes-data:/opt/data:rw
+      # Source of truth for our skills; synced into /opt/data/skills on boot.
+      - ./hermes_skills:/opt/searcharvester-skills:ro
     environment:
       - JOBS_DIR=/srv/searxng-docker/jobs
       - HERMES_HOME=/opt/data
       - ADAPTER_URL_FOR_HERMES=http://localhost:8000
       - RESEARCH_TIMEOUT_SEC=1200
+      # Hermes processes at once; the rest wait as "queued". ~200 MB each at
+      # start: 16 fits a 6 GB Docker VM, raise it on a real server.
+      - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-16}
       # Match the UID of the repo owner so mounted files stay owned by
       # the right user. macOS: 501:20 is typical; override in .env if needed.
       - HERMES_UID=${HERMES_UID:-501}
@@ -70,6 +81,14 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      # Read cascade (/extract): neuraldeep reader and the gate's LLM judge.
+      # Without a key /extract is fast path only (see read_backends.py).
+      - NEURALDEEP_API_KEY=${NEURALDEEP_API_KEY:-}
+      - NEURALDEEP_BASE_URL=${NEURALDEEP_BASE_URL:-https://api.neuraldeep.ru}
+      - JUDGE_LLM_MODEL=${JUDGE_LLM_MODEL:-qwen3.6-35b-a3b-noreason}
+      - PROXY_URL=${PROXY_URL:-}
+      - PLAYWRIGHT_URL=${PLAYWRIGHT_URL:-}
+      - READ_LOG_DB=/srv/searxng-docker/jobs/page_read_log.sqlite3
     depends_on:
       - searxng
     healthcheck:

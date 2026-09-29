@@ -32,17 +32,17 @@ The search endpoint lives at `$SEARCHARVESTER_URL` (default `http://tavily-adapt
 ### Basic search
 
 ```bash
-python3 SKILL_DIR/scripts/search.py --query "what is retrieval augmented generation" --max-results 5
+python3 /opt/data/skills/searcharvester-search/scripts/search.py --query "what is retrieval augmented generation" --max-results 5
 ```
 
 ### Pick a specific engine or category
 
 ```bash
 # Only DuckDuckGo + Brave
-python3 SKILL_DIR/scripts/search.py --query "GPT-5 release" --engines duckduckgo,brave --max-results 5
+python3 /opt/data/skills/searcharvester-search/scripts/search.py --query "GPT-5 release" --engines duckduckgo,brave --max-results 5
 
 # News category for fresh info
-python3 SKILL_DIR/scripts/search.py --query "OpenAI news today" --categories news --max-results 10
+python3 /opt/data/skills/searcharvester-search/scripts/search.py --query "OpenAI news today" --categories news --max-results 10
 ```
 
 ### Output

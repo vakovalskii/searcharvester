@@ -8,7 +8,7 @@
 model:
   # Default model to use (can be overridden with --model flag)
   # Both "default" and "model" work as the key name here.
-  default: "gpt-oss-120b"
+  default: "qwen3.6-35b-a3b-noreason"
   
   # Inference provider selection:
   #   "auto"         - Auto-detect from credentials (default)
@@ -44,7 +44,7 @@ model:
   
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
-  base_url: "http://109.230.162.92:44334/v1"
+  base_url: "https://api.neuraldeep.ru/v1"
 
   # ── Token limits — two settings, easy to confuse ──────────────────────────
   #
@@ -490,7 +490,12 @@ agent:
   # Maximum tool-calling iterations per conversation
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
-  max_turns: 60
+  # Research lead: plan, two delegate rounds, read results, write the report.
+  # 40 leaves room for that; more only feeds a loop (the flow guard in
+  # simple_tavily_adapter/guard.py caps the whole job on top of it).
+  max_turns: 40
+  # Tell the agent it is running out of turns at 80% instead of cutting it off.
+  budget_warning_ratio: 0.8
 
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
@@ -581,6 +586,13 @@ agent:
 #   qqbot:            hermes-qqbot            (same as telegram)
 #
 platform_toolsets:
+  # Research jobs (orchestrator.py runs `hermes acp`) search and read ONLY through
+  # our skills (search.py, extract.py via terminal): SSRF-safe read cascade, one
+  # budget and dedupe for the whole job (guard.py). Without this list ACP gets
+  # the full default set and agents call the built-in web_search/web_extract
+  # (keyless third-party scraper) and browser tools, bypassing all of that.
+  acp: [terminal, file, skills, delegation, todo]
+  subagent: [terminal, file, skills, todo]
   cli: [hermes-cli]
   telegram: [hermes-telegram]
   discord: [hermes-discord]
@@ -767,15 +779,39 @@ code_execution:
   max_tool_calls: 50   # Max RPC tool calls per execution (default: 50)
 
 # =============================================================================
+# Tool loop guardrails (per agent turn, lead and every child)
+# =============================================================================
+# Hermes detects exact replays, call cycles and the same failure repeating, but
+# only warns on "attended" platforms, and ACP and subagents count as attended.
+# A research job has nobody watching, so hard stops are on and thresholds lower.
+tool_loop_guardrails:
+  hard_stop_enabled: true
+  # Nested form: the defaults carry these sections and they win over flat keys.
+  warn_after:
+    exact_failure: 2
+    same_tool_failure: 3
+    idempotent_no_progress: 2
+  hard_stop_after:
+    exact_failure: 3
+    same_tool_failure: 5
+    idempotent_no_progress: 3
+
+# =============================================================================
 # Subagent Delegation
 # =============================================================================
 # The delegate_task tool spawns child agents with isolated context.
 # Supports single tasks and batch mode (default 3 parallel, configurable).
 delegation:
-  max_iterations: 50                          # Max tool-calling turns per child (default: 50)
+  # A researcher does 2-4 searches, 4-6 extracts and a few greps: ~15 turns.
+  # 25 is slack, not a target; the old 50 let a stuck child run for minutes.
+  max_iterations: 25                          # Max tool-calling turns per child (default: 50)
   # Deep-research: up to 5 sub-questions running in parallel.
   max_concurrent_children: 5
   max_spawn_depth: 1                          # Flat — children can't spawn grandchildren.
+  # Total children per one-shot session (HERMES_SINGLE_QUERY_SESSION=1, see
+  # orchestrator.py). The deep-research skill spawns up to 3 researchers + critic
+  # + fact-checker; the Hermes default of 2 would silently cut the team.
+  oneshot_max_children: 5
   # orchestrator_enabled: true                # Kill switch for role="orchestrator" children (default: true).
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
@@ -956,3 +992,15 @@ display:
 #     - command: "~/.hermes/agent-hooks/log-orchestration.sh"
 #
 # hooks_auto_accept: false
+
+# =============================================================================
+# Pre-exec command scanner (tirith)
+# =============================================================================
+# Off for research jobs. It blocked the normal flow: plain-http calls to the
+# adapter inside the container, non-ASCII search queries, "tainted" hermes binary,
+# and the agent then tried to get around it (straight to SearXNG, tirith taint).
+# The job is contained by other means: the container, writes limited to the job
+# workspace (permissions.py + HERMES_WRITE_SAFE_ROOT), the toolset list above and
+# the flow guard (guard.py).
+security:
+  tirith_enabled: false

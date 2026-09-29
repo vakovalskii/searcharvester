@@ -25,7 +25,7 @@ from typing import Any, Literal
 
 import aiohttp
 import trafilatura
-from fastapi import FastAPI, HTTPException, Path
+from fastapi import FastAPI, Header, HTTPException, Path
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, constr
 from sse_starlette.sse import EventSourceResponse
@@ -33,6 +33,9 @@ from sse_starlette.sse import EventSourceResponse
 from tavily_client import TavilyResponse, TavilyResult
 from config_loader import config
 from orchestrator import Orchestrator, Job, JobStatus
+import reader
+import read_backends
+import read_log
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -94,11 +97,27 @@ def _build_orchestrator() -> Orchestrator | None:
             "ADAPTER_URL_FOR_HERMES", "http://localhost:8000"
         ),
         timeout_sec=int(os.environ.get("RESEARCH_TIMEOUT_SEC", "900")),
+        max_concurrent=int(os.environ.get("MAX_CONCURRENT_JOBS", "12")),
         hermes_home=os.environ.get("HERMES_HOME", "/opt/data"),
     )
 
 
 orchestrator: Orchestrator | None = _build_orchestrator()
+
+
+# ---------- Read cascade ----------
+
+_reader_settings = read_backends.ReaderSettings.from_env()
+_reader_fn = read_backends.neuraldeep_reader(_reader_settings)
+_browser_fn = read_backends.playwright_browser(_reader_settings)
+
+
+async def _free_only(*_a, **_k):
+    raise read_backends.ReaderUnavailable("free fast path only")
+try:
+    read_log.init()
+except Exception as e:  # a read-only or missing jobs dir must not stop the API
+    logger.warning("page_read_log init failed: %s", e)
 
 
 # ---------- Extract constants ----------
@@ -149,21 +168,6 @@ def _gc_extract_cache() -> None:
         _extract_cache.pop(k, None)
 
 
-async def _fetch_html(session: aiohttp.ClientSession, url: str) -> str:
-    async with session.get(
-        url,
-        timeout=aiohttp.ClientTimeout(total=config.scraper_timeout),
-        headers={"User-Agent": config.scraper_user_agent},
-        allow_redirects=True,
-    ) as response:
-        if response.status != 200:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Не удалось скачать {url}: HTTP {response.status}",
-            )
-        return await response.text()
-
-
 def _extract_markdown(html: str) -> tuple[str, str]:
     """Возвращает (title, markdown_content). Бросает HTTPException, если контента нет."""
     content = trafilatura.extract(
@@ -192,9 +196,22 @@ def _extract_markdown(html: str) -> tuple[str, str]:
 
 
 async def _extract_markdown_for_url(url: str) -> tuple[str, str]:
-    async with aiohttp.ClientSession() as session:
-        html = await _fetch_html(session, url)
-    return _extract_markdown(html)
+    """(title, markdown) through the read cascade (reader.py): SSRF-checked fast path
+    with a quality gate, then the remote reader and the optional browser.
+    400 for internal or non-http URLs, 422 when a page answered but has no content,
+    502 when nothing could open it. Error texts stay neutral (no backend names)."""
+    try:
+        res = await reader.read_page(
+            url, _reader_settings, reader_fn=_reader_fn, browser_fn=_browser_fn,
+            return_format="markdown", source="extract", log_fn=read_log.log,
+        )
+    except reader.UnsafeURL:
+        raise HTTPException(status_code=400, detail="URL is not allowed (internal or non-http address)")
+    if res.content:
+        return res.title, res.content
+    if res.any_completed:
+        raise HTTPException(status_code=422, detail="The page has no readable main content")
+    raise HTTPException(status_code=502, detail="Page reading is temporarily unavailable")
 
 
 def _build_extract_response(
@@ -243,43 +260,47 @@ def _build_extract_response(
 
 # ---------- /search ----------
 
-async def _fetch_raw_content(session: aiohttp.ClientSession, url: str) -> str | None:
-    """Скрапит страницу, возвращает markdown-контент (trafilatura) или None при ошибке."""
+async def _fetch_raw_content(url: str) -> str | None:
+    """raw_content for /search results: the read cascade's free fast path only
+    (SSRF-checked, quality gate), no paid reader per search result."""
     try:
-        async with session.get(
-            url,
-            timeout=aiohttp.ClientTimeout(total=config.scraper_timeout),
-            headers={"User-Agent": config.scraper_user_agent},
-            allow_redirects=True,
-        ) as response:
-            if response.status != 200:
-                return None
-            html = await response.text()
-    except Exception:
-        return None
-
-    try:
-        content = trafilatura.extract(
-            html,
-            output_format="markdown",
-            include_formatting=True,
-            include_links=True,
-            favor_recall=True,
+        res = await reader.read_page(
+            url, _reader_settings, reader_fn=_free_only, browser_fn=_free_only,
+            return_format="markdown", source="search_raw", log_fn=read_log.log,
         )
-    except Exception:
+    except reader.UnsafeURL:
         return None
+    return res.content or None
 
-    if not content:
+
+def _job_guard(job_id: str | None):
+    """Loop guard of the research job a skill script works for (guard.py), or None
+    for plain API callers."""
+    if not job_id or orchestrator is None:
         return None
+    job = orchestrator.get(job_id)
+    return job.guard if job is not None else None
 
-    if len(content) > config.scraper_max_length:
-        content = content[: config.scraper_max_length] + "..."
-    return content
+
+def _guard_notice_response(query: str, notice: str, cached: dict | None) -> dict[str, Any]:
+    body = dict(cached) if cached else TavilyResponse(
+        query=query, results=[], response_time=0.0, request_id=str(uuid.uuid4())).model_dump()
+    body["notice"] = notice
+    return body
 
 
 @app.post("/search")
-async def search(request: SearchRequest) -> dict[str, Any]:
+async def search(
+    request: SearchRequest,
+    x_searcharvester_job: str | None = Header(default=None),
+) -> dict[str, Any]:
     """Tavily-совместимый эндпойнт поиска."""
+    guard = _job_guard(x_searcharvester_job)
+    if guard is not None:
+        verdict, notice, cached = guard.on_search(request.query)
+        if verdict != "ok":
+            logger.info("Search %s by loop guard: q=%r job=%s", verdict, request.query, x_searcharvester_job)
+            return _guard_notice_response(request.query, notice, cached)
     start_time = time.time()
     request_id = str(uuid.uuid4())
 
@@ -331,12 +352,11 @@ async def search(request: SearchRequest) -> dict[str, Any]:
         urls_to_scrape = [
             r["url"] for r in searxng_results[: request.max_results] if r.get("url")
         ]
-        async with aiohttp.ClientSession() as scrape_session:
-            tasks = [_fetch_raw_content(scrape_session, u) for u in urls_to_scrape]
-            page_contents = await asyncio.gather(*tasks, return_exceptions=True)
-            for url, content in zip(urls_to_scrape, page_contents):
-                if isinstance(content, str) and content:
-                    raw_contents[url] = content
+        page_contents = await asyncio.gather(*[_fetch_raw_content(u) for u in urls_to_scrape],
+                                             return_exceptions=True)
+        for url, content in zip(urls_to_scrape, page_contents):
+            if isinstance(content, str) and content:
+                raw_contents[url] = content
 
     results: list[TavilyResult] = []
     for i, result in enumerate(searxng_results[: request.max_results]):
@@ -366,14 +386,26 @@ async def search(request: SearchRequest) -> dict[str, Any]:
     )
 
     logger.info("Search done: %d results in %.2fs", len(results), response_time)
-    return response.model_dump()
+    body = response.model_dump()
+    if guard is not None:
+        guard.remember_search(request.query, body)
+    return body
 
 
 # ---------- /extract ----------
 
 @app.post("/extract")
-async def extract(req: ExtractRequest) -> dict[str, Any]:
+async def extract(
+    req: ExtractRequest,
+    x_searcharvester_job: str | None = Header(default=None),
+) -> dict[str, Any]:
     """Извлекает main-content страницы в markdown. Возвращает id для пагинации (size=f)."""
+    guard = _job_guard(x_searcharvester_job)
+    if guard is not None:
+        verdict, notice = guard.on_extract(req.url)
+        if verdict == "exhausted":
+            logger.info("Extract refused by loop guard: url=%s job=%s", req.url, x_searcharvester_job)
+            return {"id": None, "url": req.url, "title": "", "content": "", "notice": notice}
     _gc_extract_cache()
     extract_id = _extract_id(req.url)
 
@@ -414,6 +446,9 @@ async def extract_page(
 
 class ResearchRequest(BaseModel):
     query: constr(min_length=1, max_length=2000)  # type: ignore[valid-type]
+    # quick: one agent, ~8 searches and page reads, for short factual questions;
+    # deep: the lead + researchers + critic/fact-checker team.
+    depth: Literal["quick", "deep"] = "deep"
 
 
 class ResearchCreated(BaseModel):
@@ -501,7 +536,7 @@ def _job_artifacts(job: Job) -> dict[str, int]:
 @app.post("/research", response_model=ResearchCreated, status_code=202)
 async def research_create(req: ResearchRequest) -> dict[str, str]:
     orch = _ensure_orchestrator()
-    job_id = await orch.spawn(query=req.query)
+    job_id = await orch.spawn(query=req.query, depth=req.depth)
     return {"job_id": job_id, "status": "queued"}
 
 

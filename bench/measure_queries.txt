@@ -1,0 +1,4 @@
+# three shapes: a single fact, a comparison, a Russian topic
+On what month, day, and year did Bernie Sanders sponsor the Cancer Registries Amendment Act?
+Compare vLLM and SGLang for serving MoE models in 2026: throughput, features, and known limitations
+Какие изменения в налогообложении ИП на УСН вступают в силу в 2026 году

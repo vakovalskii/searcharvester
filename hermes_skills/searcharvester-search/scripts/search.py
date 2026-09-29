@@ -8,6 +8,15 @@ import urllib.request
 import urllib.error
 
 
+def _headers() -> dict:
+    """The job id lets the adapter's loop guard count and dedupe calls of all agents
+    of one research together (set by the orchestrator)."""
+    h = {"Content-Type": "application/json"}
+    if os.environ.get("SEARCHARVESTER_JOB_ID"):
+        h["X-Searcharvester-Job"] = os.environ["SEARCHARVESTER_JOB_ID"]
+    return h
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Search via Searcharvester")
     p.add_argument("--query", required=True)
@@ -33,7 +42,7 @@ def main() -> int:
     req = urllib.request.Request(
         f"{args.base_url.rstrip('/')}/search",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=_headers(),
         method="POST",
     )
     try:
@@ -55,6 +64,8 @@ def main() -> int:
             if r.get("url")
         ],
     }
+    if data.get("notice"):
+        out["notice"] = data["notice"]  # from the research's loop guard
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
