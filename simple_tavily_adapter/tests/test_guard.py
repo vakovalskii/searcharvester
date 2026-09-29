@@ -233,3 +233,18 @@ def test_dead_hermes_fails_the_acp_call_at_once():
         with pytest.raises(HermesExited, match="out of memory"):
             await _race_proc(exit_task, never(), timeout=5)
     asyncio.run(go())
+
+
+def test_acp_stdout_accepts_long_lines():
+    """A single ACP line far above asyncio's 64 KB default must be readable."""
+    import sys
+    from orchestrator import ACP_LINE_LIMIT
+
+    async def go():
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", "print('x' * 3_000_000)",
+            stdout=asyncio.subprocess.PIPE, limit=ACP_LINE_LIMIT)
+        line = await proc.stdout.readline()
+        await proc.wait()
+        return len(line)
+    assert asyncio.run(go()) == 3_000_001

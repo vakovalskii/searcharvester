@@ -34,6 +34,7 @@ from guard import JobGuard, Limits, Signal
 logger = logging.getLogger(__name__)
 
 REPORT_FILENAME = "report.md"
+ACP_LINE_LIMIT = 32 * 1024 * 1024  # bytes per ACP message line from hermes
 LOG_FILENAME = "hermes.log"
 EVENTS_FILENAME = "events.jsonl"
 
@@ -365,6 +366,11 @@ class Orchestrator:
                 # either could take uvicorn down (seen at 30 parallel jobs: PID 1
                 # exited 0 and every running job was lost).
                 start_new_session=True,
+                # One ACP message is one JSON line on stdout. asyncio's default 64 KB
+                # line limit killed a job on its last step: the write_file update for
+                # a long report.md did not fit ("Separator is found, but chunk is
+                # longer than limit").
+                limit=ACP_LINE_LIMIT,
             )
         except FileNotFoundError:
             await self._fail(job, f"`{self._hermes_bin}` not found in PATH")
