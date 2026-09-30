@@ -382,10 +382,11 @@ export function markReportSources(view: JobView, report: string | null): JobView
   return view;
 }
 
-/** What a sub-agent handed back: its last message, or null while it has not answered yet. */
+/** What a sub-agent handed back: its last message once it is done, or null while it
+ *  still works (a running agent's last message is narration, not findings). */
 export function agentReport(view: JobView, id: string): string | null {
   const a = view.agents.get(id);
-  if (!a) return null;
+  if (!a || !["done", "failed", "stopped"].includes(a.state)) return null;
   for (let i = a.items.length - 1; i >= 0; i--) {
     const it = a.items[i];
     if (it.kind === "message" && it.text.trim()) return it.text;

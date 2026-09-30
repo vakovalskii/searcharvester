@@ -314,7 +314,11 @@ export default function App() {
               )}
               {tab === "report" && focusAgent && (focusReport
                 ? <ReportView report={focusReport} onRunAgain={() => open(null)} />
-                : <div className="text-sm text-slate-500">This sub-agent has not handed back its findings yet.</div>)}
+                : <div className="text-sm text-slate-500">
+                    {["done", "failed", "stopped"].includes(focusAgent.state)
+                      ? "This sub-agent ended without findings."
+                      : "Still working. Its findings appear here when it finishes; follow its steps in the chat on the right."}
+                  </div>)}
               {tab === "report" && !focusAgent && (record?.report
                 ? <ReportView report={record.report} onRunAgain={() => open(null)} />
                 : <div className="text-sm text-slate-500">{running ? "The report appears when the agents finish. Watch the branches meanwhile." : "No report."}</div>)}

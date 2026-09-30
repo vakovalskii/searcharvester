@@ -174,6 +174,8 @@ describe("data flows and drill-down", () => {
     const v = reduce(job);
     expect(agentReport(v, "sub-a-1")).toContain("x is 42");
     expect(agentReport(reduce(job.slice(0, 6)), "sub-a-1")).toBeNull();
+    // still running: its last line is narration, not findings
+    expect(agentReport(reduce(job.slice(0, 7)), "sub-a-1")).toBeNull();
     expect(agentReport(v, "nobody")).toBeNull();
   });
 

@@ -66,6 +66,8 @@ function AgentCard({ a, view, onOpen }: { a: Agent; view: JobView; onOpen: () =>
   const pages = [...view.sources.values()].filter((s) => s.readers.includes(a.id));
   const cited = pages.filter((s) => s.inReport).length;
   const answer = agentReport(view, a.id);
+  const last = [...a.items].reverse().find((i) => i.kind === "message" || i.kind === "thought");
+  const now = last && (last.kind === "message" || last.kind === "thought") ? last.text : "";
   const active = ACTIVE.has(a.state);
   return (
     <button onClick={onOpen}
@@ -84,6 +86,7 @@ function AgentCard({ a, view, onOpen }: { a: Agent; view: JobView; onOpen: () =>
         <span>{secs(a.startTs, a.lastTs)}</span>
       </div>
       {answer && <div className="mt-2 text-[11px] text-slate-400 line-clamp-3 border-t border-base-800 pt-1.5">{answer.slice(0, 300)}</div>}
+      {!answer && now && <div className="mt-2 text-[11px] text-slate-500 italic line-clamp-2 border-t border-base-800 pt-1.5">now: {now.slice(0, 200)}</div>}
       <div className="mt-1.5 text-[11px] text-accent-400">open this research →</div>
     </button>
   );
