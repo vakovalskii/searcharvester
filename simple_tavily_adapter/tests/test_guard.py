@@ -248,3 +248,12 @@ def test_acp_stdout_accepts_long_lines():
         await proc.wait()
         return len(line)
     assert asyncio.run(go()) == 3_000_001
+
+
+def test_grep_without_matches_is_not_an_error():
+    """30.09: a live deep job was stopped for 12 'errors' that were empty greps."""
+    guard = g(same_error_stop=3)
+    line = ('2026-09-30 10:00:00 [WARNING] agent.tool_executor: Tool terminal returned error (0.1s): '
+            '{"output": "", "exit_code": 1, "error": null, "exit_code_meaning": "No matches found (not an error)"}')
+    assert not [s for _ in range(10) for s in guard.on_log_line(line)]
+    assert guard.tripped is None

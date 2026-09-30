@@ -138,7 +138,9 @@ class JobGuard:
             out += self._budget("llm_calls", self.llm_calls, self.limits.max_llm_calls)
             out += self._budget("input_tokens", self.input_tokens, self.limits.max_input_tokens)
         m = _TOOL_ERROR_RE.search(line)
-        if m:
+        # grep without matches exits 1 and Hermes logs it as an error while saying
+        # itself it is not one; a researcher grepping saved pages does that a lot.
+        if m and "not an error" not in line.lower():
             key = f"{m.group(1)}: {_NOISE_RE.sub('#', m.group(2))[:160]}"
             self._errors[key] += 1
             if self._errors[key] == self.limits.same_error_stop:
