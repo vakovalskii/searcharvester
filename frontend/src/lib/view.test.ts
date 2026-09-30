@@ -243,6 +243,22 @@ describe("branches of a two-round job (fixture from a live run)", () => {
     expect(r.guard.counters.searches).toBeLessThanOrEqual(r.guard.limits.max_searches);
   });
 
+  it("puts a denied write into the chat of the agent that tried it", () => {
+    const r = reduce([
+      ev(1, "lead", "spawn", { query: "q" }),
+      ev(2, "sub-a-1", "spawn", { goal: "Researcher: a" }),
+      ev(3, "lead", "note", { kind: "permission", allowed: false, reason: "outside the job workspace: /tmp/fetch.py" }),
+      ev(4, "lead", "tool_result", { id: "edit-approval-2", status: "failed", content: "" }),
+      ev(5, "sub-a-1", "tool_call", { id: "w1", title: "write_file: /tmp/fetch.py" }),
+      ev(6, "sub-a-1", "tool_result", { id: "w1", status: "failed", content: "Edit approval denied" }),
+    ]);
+    const sub = r.agents.get("sub-a-1")!;
+    expect(sub.items.some((i) => i.kind === "note" && i.text.includes("/tmp/fetch.py"))).toBe(true);
+    const lead = r.agents.get("lead")!;
+    expect(lead.items.some((i) => i.kind === "note" && i.text.includes("blocked"))).toBe(false);
+    expect(lead.state).not.toBe("failed");
+  });
+
   it("does not glue when a round has two candidates", () => {
     const r = reduce([
       ev(1, "lead", "spawn", { query: "q" }),

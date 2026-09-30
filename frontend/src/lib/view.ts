@@ -155,6 +155,7 @@ export function reduce(events: AgentEvent[]): JobView {
   const flow = (ev: AgentEvent, from: string, to: string, kind: Flow["kind"], agentId: string) =>
     view.flows.push({ seq: ev.seq ?? 0, ts: ev.ts, from, to, kind, agent: agentId });
   let finalGuard = false;
+  const denials: { reason: string; ts: string }[] = [];
   const callTarget = new Map<string, { tool: string; url?: string }>(); // tool call id -> what it touched
   const alias = new Map<string, string>(); // provisional sub-db-* id -> canonical id
   const canon = (id: string) => alias.get(id) ?? id;
@@ -280,6 +281,9 @@ export function reduce(events: AgentEvent[]): JobView {
         break;
       }
       case "tool_result": {
+        // Hermes echoes each edit approval as a tool update of the lead session;
+        // the real write call and its denial live in the sub-agent's own chat.
+        if (String(p.id ?? "").startsWith("edit-approval-")) break;
         const a = agent(id, parent, ev.ts);
         const item = [...a.items].reverse().find((i): i is ToolItem => i.kind === "tool" && i.id === String(p.id));
         if (item) {
@@ -300,6 +304,9 @@ export function reduce(events: AgentEvent[]): JobView {
         break;
       }
       case "note": {
+        if (p.kind === "permission" && p.allowed === false) {
+          denials.push({ reason: String(p.reason ?? ""), ts: ev.ts });
+        }
         if (p.kind === "guard") {
           const counters: Record<string, number> = {};
           for (const k of ["llm_calls", "input_tokens", "output_tokens", "searches", "extracts", "duplicates"]) {
@@ -337,6 +344,7 @@ export function reduce(events: AgentEvent[]): JobView {
   // lead first
   view.order = ["lead", ...view.order.filter((x) => x !== "lead")].filter((x) => view.agents.has(x));
   glueOrphans(view);
+  placeDenials(view, denials);
   for (const r of view.rounds) r.agents = view.order.filter((x) => view.agents.get(x)?.round === r.index);
 
   // The guard publishes its counters only with a warning or at the end, so between
@@ -418,5 +426,32 @@ function glueOrphans(view: JobView): void {
     }
     view.agents.delete(oid);
     view.order = view.order.filter((x) => x !== oid);
+  }
+}
+
+/**
+ * Edit approvals arrive over the lead's ACP session, so we do not know at that
+ * moment which agent asked. Put each denial into the chat of the agent whose
+ * write call targets the same path; the lead only when nobody matches.
+ */
+function placeDenials(view: JobView, denials: { reason: string; ts: string }[]): void {
+  for (const d of denials) {
+    const path = d.reason.split(": ").slice(1).join(": ").trim();
+    let owner = "lead";
+    if (path) {
+      for (const id of view.order) {
+        const a = view.agents.get(id)!;
+        const hit = a.items.some((i) => i.kind === "tool" && i.tool === "write"
+          && JSON.stringify([i.label, i.args]).includes(path.split("/").pop() ?? path));
+        if (hit && id !== "lead") { owner = id; break; }
+        if (hit) owner = id;
+      }
+    }
+    const a = view.agents.get(owner);
+    if (!a) continue;
+    const text = `blocked: ${d.reason}`;
+    const at = a.items.findIndex((i) => i.ts > d.ts);
+    const note: ChatItem = { kind: "note", text, level: "warn", ts: d.ts };
+    if (at < 0) a.items.push(note); else a.items.splice(at, 0, note);
   }
 }
