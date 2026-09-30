@@ -11,7 +11,7 @@ import reader
 @pytest.fixture
 def client(monkeypatch):
     main._extract_cache.clear()
-    return TestClient(main.app)
+    return TestClient(main.app, base_url="http://localhost", headers={"X-Searcharvester-Client": "1"})
 
 
 def _fake(result=None, exc=None):

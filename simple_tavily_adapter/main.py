@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -50,9 +51,53 @@ _cors_origins = os.environ.get(
     "CORS_ORIGINS",
     "http://localhost:9762,http://127.0.0.1:9762,http://localhost:8000",
 ).split(",")
+_allowed_origins = [o.strip() for o in _cors_origins if o.strip()]
+
+# ---------- Request guard (stage 0 of docs/ui-and-visualization.md) ----------
+# The API has no login and a job runs an agent with a shell. Two browser attacks
+# reach a localhost API anyway:
+# - a plain HTML form on any site POSTs here without a CORS preflight: every
+#   state-changing request must carry X-Searcharvester-Client (a custom header
+#   forces a preflight, which CORS then refuses for foreign origins), and a
+#   present Origin must be one of ours;
+# - DNS rebinding: a foreign name resolving to 127.0.0.1 is "same origin" for the
+#   browser, so GETs (job list, reports, SSE) are readable: Host must be ours.
+CLIENT_HEADER = "x-searcharvester-client"
+_allowed_hosts = {
+    h.strip().lower()
+    for h in os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1,[::1],tavily-adapter").split(",")
+    if h.strip()
+}
+_MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _host_allowed(host_header: str) -> bool:
+    host = host_header.strip().lower()
+    if host.startswith("["):  # [::1]:8000
+        host = host.split("]", 1)[0] + "]"
+    else:
+        host = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    return host in _allowed_hosts
+
+
+@app.middleware("http")
+async def request_guard(request, call_next):
+    from fastapi.responses import JSONResponse
+    if not _host_allowed(request.headers.get("host", "")):
+        return JSONResponse({"detail": "Host not allowed"}, status_code=400)
+    if request.method in _MUTATING:
+        origin = request.headers.get("origin")
+        if origin is not None and origin not in _allowed_origins:
+            return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
+        if request.headers.get(CLIENT_HEADER) != "1":
+            return JSONResponse({"detail": f"{CLIENT_HEADER} header required"}, status_code=403)
+    return await call_next(request)
+
+
+# CORS goes on last so it wraps the guard: preflights are answered before it.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in _cors_origins if o.strip()],
+    allow_origins=_allowed_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -273,10 +318,14 @@ async def _fetch_raw_content(url: str) -> str | None:
     return res.content or None
 
 
+JOB_ID_RE = r"^[0-9a-f]{16}$"
+JOB_ID = Path(..., pattern=JOB_ID_RE)
+
+
 def _job_guard(job_id: str | None):
     """Loop guard of the research job a skill script works for (guard.py), or None
     for plain API callers."""
-    if not job_id or orchestrator is None:
+    if not job_id or orchestrator is None or not re.fullmatch(JOB_ID_RE, job_id):
         return None
     job = orchestrator.get(job_id)
     return job.guard if job is not None else None
@@ -541,7 +590,7 @@ async def research_create(req: ResearchRequest) -> dict[str, str]:
 
 
 @app.get("/research/{job_id}", response_model=ResearchStatus)
-async def research_get(job_id: str) -> ResearchStatus:
+async def research_get(job_id: str = JOB_ID) -> ResearchStatus:
     orch = _ensure_orchestrator()
     job = orch.get(job_id)
     if job is None:
@@ -550,7 +599,7 @@ async def research_get(job_id: str) -> ResearchStatus:
 
 
 @app.get("/research/{job_id}/logs")
-async def research_logs(job_id: str) -> dict[str, str]:
+async def research_logs(job_id: str = JOB_ID) -> dict[str, str]:
     orch = _ensure_orchestrator()
     job = orch.get(job_id)
     if job is None:
@@ -562,7 +611,7 @@ async def research_logs(job_id: str) -> dict[str, str]:
 
 
 @app.get("/research/{job_id}/events")
-async def research_events(job_id: str):
+async def research_events(job_id: str = JOB_ID):
     """SSE stream of typed agent events for a research job.
 
     Each event is a normalized dict — see events.Event for schema:
@@ -605,7 +654,7 @@ async def research_events(job_id: str):
 
 
 @app.get("/research/{job_id}/snapshot")
-async def research_snapshot(job_id: str) -> dict[str, Any]:
+async def research_snapshot(job_id: str = JOB_ID) -> dict[str, Any]:
     """Return the full event log so far (no streaming). Useful for
     non-SSE clients or reconnecting UIs that already got a `since_ts`."""
     orch = _ensure_orchestrator()
@@ -623,7 +672,7 @@ async def research_snapshot(job_id: str) -> dict[str, Any]:
 
 
 @app.delete("/research/{job_id}")
-async def research_cancel(job_id: str) -> dict[str, Any]:
+async def research_cancel(job_id: str = JOB_ID) -> dict[str, Any]:
     orch = _ensure_orchestrator()
     job = orch.get(job_id)
     if job is None:

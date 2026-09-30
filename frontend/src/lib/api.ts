@@ -62,10 +62,14 @@ export interface JobTerminalStatus {
 
 // --------- Calls ---------
 
+/** Every state-changing call carries it: the adapter refuses POST/DELETE without
+ *  it, so a plain HTML form on a foreign site cannot start or cancel a job. */
+export const CLIENT_HEADERS = { "X-Searcharvester-Client": "1" } as const;
+
 export async function createResearch(query: string): Promise<ResearchCreated> {
   const r = await fetch(`${API_URL}/research`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...CLIENT_HEADERS },
     body: JSON.stringify({ query }),
   });
   if (!r.ok) {
@@ -82,7 +86,7 @@ export async function getJob(jobId: string): Promise<JobSnapshot | null> {
 }
 
 export async function cancelJob(jobId: string): Promise<void> {
-  await fetch(`${API_URL}/research/${jobId}`, { method: "DELETE" });
+  await fetch(`${API_URL}/research/${jobId}`, { method: "DELETE", headers: CLIENT_HEADERS });
 }
 
 export interface JobSnapshotWithEvents {

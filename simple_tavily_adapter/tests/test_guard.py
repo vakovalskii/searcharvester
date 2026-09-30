@@ -100,12 +100,12 @@ def test_idle_stop():
 
 @pytest.fixture
 def api(monkeypatch):
-    job = Job(id="job0000000000001", query="q")
+    job = Job(id="00000000000000a1", query="q")
     job.guard = g(max_searches=1, max_extracts=1)
     orch = SimpleNamespace(get=lambda jid: job if jid == job.id else None)
     monkeypatch.setattr(main, "orchestrator", orch)
     main._extract_cache.clear()
-    return TestClient(main.app), job
+    return TestClient(main.app, base_url="http://localhost", headers={"X-Searcharvester-Client": "1"}), job
 
 
 def test_search_endpoint_applies_guard_only_with_job_header(api, monkeypatch):

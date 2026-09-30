@@ -93,7 +93,7 @@ def _save_extract(full_md: str, extract_id: str) -> str:
 def _headers() -> dict:
     """The job id lets the adapter's loop guard count and dedupe calls of all agents
     of one research together (set by the orchestrator)."""
-    h = {"Content-Type": "application/json"}
+    h = {"Content-Type": "application/json", "X-Searcharvester-Client": "1"}
     if os.environ.get("SEARCHARVESTER_JOB_ID"):
         h["X-Searcharvester-Job"] = os.environ["SEARCHARVESTER_JOB_ID"]
     return h

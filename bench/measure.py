@@ -27,7 +27,7 @@ RATE_RE = re.compile(r"\b429\b|rate.?limit|too many requests|retry(ing)? in|max_
 
 
 def post(url, body):
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"content-type": "application/json"})
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"content-type": "application/json", "x-searcharvester-client": "1"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.load(r)
 

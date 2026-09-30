@@ -18,7 +18,7 @@ def client(monkeypatch):
     mock_orch.get = MagicMock(return_value=None)
     mock_orch.read_logs = MagicMock(return_value=None)
     monkeypatch.setattr(main, "orchestrator", mock_orch)
-    return TestClient(main.app), mock_orch
+    return TestClient(main.app, base_url="http://localhost", headers={"X-Searcharvester-Client": "1"}), mock_orch
 
 
 def test_post_research_empty_query_returns_422(client):
@@ -62,8 +62,8 @@ def test_get_research_unknown_returns_404(client):
 
 def test_get_research_running_does_not_include_report(client):
     c, orch = client
-    orch.get.return_value = Job(id="abc", query="x", status=JobStatus.running)
-    r = c.get("/research/abc")
+    orch.get.return_value = Job(id="0123456789abcdef", query="x", status=JobStatus.running)
+    r = c.get("/research/0123456789abcdef")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "running"
@@ -73,12 +73,12 @@ def test_get_research_running_does_not_include_report(client):
 def test_get_research_completed_returns_report_content(client):
     c, orch = client
     orch.get.return_value = Job(
-        id="abc",
+        id="0123456789abcdef",
         query="x",
         status=JobStatus.completed,
         report="# Title\n\n[1] src\n",
     )
-    r = c.get("/research/abc")
+    r = c.get("/research/0123456789abcdef")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "completed"
@@ -87,7 +87,7 @@ def test_get_research_completed_returns_report_content(client):
 
 def test_delete_research_calls_cancel(client):
     c, orch = client
-    orch.get.return_value = Job(id="abc", query="x", status=JobStatus.running)
-    r = c.delete("/research/abc")
+    orch.get.return_value = Job(id="0123456789abcdef", query="x", status=JobStatus.running)
+    r = c.delete("/research/0123456789abcdef")
     assert r.status_code == 200
-    orch.cancel.assert_awaited_once_with("abc")
+    orch.cancel.assert_awaited_once_with("0123456789abcdef")

@@ -63,7 +63,7 @@ Just return the letters "A", "B", or "C", with no text around it."""
 
 def http(url, body=None, headers=None, timeout=60):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, headers={"content-type": "application/json", **(headers or {})})
+    req = urllib.request.Request(url, data=data, headers={"content-type": "application/json", "x-searcharvester-client": "1", **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 
