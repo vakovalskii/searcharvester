@@ -274,3 +274,37 @@ describe("branches of a two-round job (fixture from a live run)", () => {
     expect(r.rounds[0].agents).toContain("sub-db-x");
   });
 });
+
+describe("per-role models", () => {
+  const models = {
+    lead: { model: "qwen3.8-27b", reasoning: "low" },
+    researcher: { model: "qwen3.6-35b-a3b-noreason", reasoning: "auto" },
+    fact_checker: { model: "qwen3.8-27b", reasoning: "high" },
+  };
+  const view = reduce([
+    ev(1, "lead", "spawn", { query: "q", depth: "deep", models }),
+    ev(2, "sub-a-1", "spawn", { goal: "Researcher: sub-question 1 — facts about X", delegate_call_id: "c1" }),
+    ev(3, "sub-a-2", "spawn", { goal: "Fact-checker: verify specific claims", delegate_call_id: "c1" }),
+    ev(4, "sub-a-2", "usage", { input_tokens: 10, output_tokens: 5, reasoning_tokens: 3, model: "qwen3.8-27b-real" }),
+  ]);
+
+  it("gives every agent the model of its role", () => {
+    expect(view.agents.get("lead")!.model).toBe("qwen3.8-27b");
+    expect(view.agents.get("lead")!.reasoning).toBe("low");
+    // "facts" in a researcher goal does not make it a fact-checker: the prefix decides
+    expect(view.agents.get("sub-a-1")!.role).toBe("researcher");
+    expect(view.agents.get("sub-a-1")!.model).toBe("qwen3.6-35b-a3b-noreason");
+  });
+
+  it("trusts the sub-agent's own session over the choice", () => {
+    const a = view.agents.get("sub-a-2")!;
+    expect(a.model).toBe("qwen3.8-27b-real");
+    expect(a.reasoning).toBe("high");
+    expect(a.reasoningTokens).toBe(3);
+  });
+
+  it("older jobs without models stay blank", () => {
+    const old = reduce([ev(1, "lead", "spawn", { query: "q" })]);
+    expect(old.agents.get("lead")!.model).toBeNull();
+  });
+});

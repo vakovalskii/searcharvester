@@ -1,9 +1,12 @@
 import { KeyboardEvent, useEffect, useRef, useState } from "react";
 import { SendHorizontal } from "lucide-react";
-import type { Depth } from "../lib/api";
+import type { Depth, ModelOptions, RoleModels } from "../lib/api";
+import { getModelOptions } from "../lib/api";
+import { loadSaved, mergeChoice, requestModels, saveChoice } from "../lib/models";
+import ModelPicker from "./ModelPicker";
 
 interface Props {
-  onSubmit: (query: string, depth: Depth) => void;
+  onSubmit: (query: string, depth: Depth, models?: Partial<RoleModels>) => void;
   disabled: boolean;
 }
 
@@ -19,16 +22,36 @@ const DEPTHS: { id: Depth; title: string; hint: string }[] = [
 export default function ResearchForm({ onSubmit, disabled }: Props) {
   const [query, setQuery] = useState("");
   const [depth, setDepth] = useState<Depth>("quick");
+  const [options, setOptions] = useState<ModelOptions | null>(null);
+  const [optionsError, setOptionsError] = useState<string | null>(null);
+  const [models, setModels] = useState<RoleModels | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     ref.current?.focus();
   }, []);
 
+  useEffect(() => {
+    let live = true;
+    getModelOptions()
+      .then((o) => {
+        if (!live) return;
+        setOptions(o);
+        setModels(mergeChoice(o.defaults, loadSaved(), o.models));
+      })
+      .catch((e: Error) => live && setOptionsError(e.message));
+    return () => { live = false; };
+  }, []);
+
+  const changeModels = (v: RoleModels) => {
+    setModels(v);
+    saveChoice(v);
+  };
+
   const submit = () => {
     const q = query.trim();
     if (!q || disabled) return;
-    onSubmit(q, depth);
+    onSubmit(q, depth, models && options ? requestModels(models, options.defaults, depth) : undefined);
   };
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -82,6 +105,8 @@ export default function ResearchForm({ onSubmit, disabled }: Props) {
           </button>
         ))}
       </div>
+      <ModelPicker depth={depth} options={options} loadError={optionsError} value={models}
+                   onChange={changeModels} disabled={disabled} />
       <div className="flex justify-between items-center text-xs text-slate-500 mt-2 px-1">
         <span>
           {query.length > 0 && `${query.length} chars`}

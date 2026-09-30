@@ -3,7 +3,8 @@
  * docs/ui-and-visualization.md). Graph, chats, sources and budgets all come from
  * `reduce(events)`, so a replay slider later is just `reduce(events.slice(0, t))`.
  */
-import type { AgentEvent } from "./api";
+import type { AgentEvent, Reasoning, RoleChoice, RoleKey } from "./api";
+import { roleKey } from "./models";
 
 export type AgentState =
   | "starting" | "thinking" | "searching" | "reading" | "writing"
@@ -37,6 +38,9 @@ export interface Agent {
   toolCalls: number;
   tokensIn: number;
   tokensOut: number;
+  reasoningTokens: number;
+  model: string | null;          // the job's choice for the role; the sub-agent's own session once known
+  reasoning: Reasoning | null;
   unmatched: boolean;
   lastTs: string;
   startTs: string;
@@ -78,6 +82,7 @@ export interface JobView {
   lastSeq: number;
   flows: Flow[];
   rounds: Round[];       // the lead's delegations in order: the branches of the research
+  models: Partial<Record<RoleKey, RoleChoice>>;  // per-role choice of the job (lead spawn)
 }
 
 /** One delegate_task call of the lead and the sub-agents it started. */
@@ -111,6 +116,10 @@ function domainOf(url: string): string {
 
 function roleOf(goal: string, id: string): string {
   if (id === "lead") return "lead";
+  // The prefix the skill requires wins (Hermes picks the role's model by it);
+  // a researcher goal that mentions "facts" is still a researcher.
+  const m = /^\W*(researcher|critic|fact[\s_-]?checker)\b/i.exec(goal);
+  if (m) return m[1].toLowerCase().startsWith("fact") ? "fact-checker" : m[1].toLowerCase();
   const g = goal.toLowerCase();
   if (g.includes("critic") || g.includes("критик")) return "critic";
   if (g.includes("fact") || g.includes("проверк")) return "fact-checker";
@@ -143,14 +152,25 @@ function stateForTool(tool: string): AgentState {
 function newAgent(id: string, parent: string | null, goal: string, ts: string, unmatched = false): Agent {
   return {
     id, parent, goal, role: roleOf(goal, id), state: "starting", items: goal ? [{ kind: "goal", text: goal, ts }] : [],
-    toolCalls: 0, tokensIn: 0, tokensOut: 0, unmatched, lastTs: ts, startTs: ts, round: 0,
+    toolCalls: 0, tokensIn: 0, tokensOut: 0, reasoningTokens: 0, model: null, reasoning: null,
+    unmatched, lastTs: ts, startTs: ts, round: 0,
   };
+}
+
+/** The job's choice for an agent's role, until its own session says otherwise. */
+function applyRoleChoice(a: Agent, models: JobView["models"]): void {
+  const key = roleKey(a.role, a.id);
+  const c = key ? models[key] : undefined;
+  if (!c) return;
+  if (!a.model) a.model = c.model;
+  a.reasoning = c.reasoning;
 }
 
 export function reduce(events: AgentEvent[]): JobView {
   const view: JobView = {
     query: "", depth: "", agents: new Map(), order: [], sources: new Map(),
     guard: { counters: {}, limits: {}, stoppedBy: null, warnings: [] }, status: null, lastSeq: 0, flows: [], rounds: [],
+    models: {},
   };
   const flow = (ev: AgentEvent, from: string, to: string, kind: Flow["kind"], agentId: string) =>
     view.flows.push({ seq: ev.seq ?? 0, ts: ev.ts, from, to, kind, agent: agentId });
@@ -188,7 +208,10 @@ export function reduce(events: AgentEvent[]): JobView {
           dst.tokensOut = Math.max(dst.tokensOut, src.tokensOut);
           dst.state = src.state;
           dst.lastTs = src.lastTs;
+          dst.reasoningTokens = Math.max(dst.reasoningTokens, src.reasoningTokens);
+          dst.model = src.model ?? dst.model;
           if (!dst.goal) { dst.goal = src.goal; dst.role = roleOf(src.goal, to); dst.items.unshift(...src.items.filter((i) => i.kind === "goal")); }
+          applyRoleChoice(dst, view.models);
         } else {
           view.agents.set(to, { ...src, id: to, unmatched: false });
           view.order[view.order.indexOf(from)] = to;
@@ -214,7 +237,11 @@ export function reduce(events: AgentEvent[]): JobView {
           view.query = String(p.query ?? "");
           view.depth = String(p.depth ?? "");
           view.guard.limits = (p.limits as Record<string, number>) ?? {};
-          agent("lead", null, ev.ts).state = "thinking";
+          view.models = (p.models as JobView["models"]) ?? {};
+          const lead = agent("lead", null, ev.ts);
+          lead.state = "thinking";
+          applyRoleChoice(lead, view.models);
+          for (const a of view.agents.values()) applyRoleChoice(a, view.models);
         } else {
           const goal = String(p.goal ?? "");
           const existing = view.agents.get(id);
@@ -222,9 +249,11 @@ export function reduce(events: AgentEvent[]): JobView {
             if (!existing.goal && goal) {
               existing.goal = goal; existing.role = roleOf(goal, id);
               existing.items.unshift({ kind: "goal", text: goal, ts: ev.ts });
+              applyRoleChoice(existing, view.models);
             }
           } else {
             const na = newAgent(id, parent ?? "lead", goal, ev.ts, Boolean(p.unmatched));
+            applyRoleChoice(na, view.models);
             const byCall = view.rounds.find((r) => r.callId === String(p.delegate_call_id ?? ""));
             na.round = byCall?.index ?? view.rounds.length;
             view.agents.set(id, na);
@@ -301,6 +330,8 @@ export function reduce(events: AgentEvent[]): JobView {
         const a = agent(id, parent, ev.ts);
         a.tokensIn = Number(p.input_tokens ?? a.tokensIn);
         a.tokensOut = Number(p.output_tokens ?? a.tokensOut);
+        a.reasoningTokens = Number(p.reasoning_tokens ?? a.reasoningTokens);
+        if (typeof p.model === "string" && p.model) a.model = p.model;  // what it really ran on
         break;
       }
       case "note": {

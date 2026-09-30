@@ -78,6 +78,9 @@ class SubagentTail:
     hold_polls: int = 5              # ~10 s at the 2 s tail interval
     _tasks: dict[str, _Task] = field(default_factory=dict)
     _sessions: dict[str, _Session] = field(default_factory=dict)
+    # Optional columns (model, reasoning) differ between Hermes versions: read
+    # the ones this database has, so an older schema keeps the tail on.
+    _cols: dict[str, set[str]] | None = None
 
     # ---------- inputs from the ACP side ----------
 
@@ -153,6 +156,15 @@ class SubagentTail:
         db.execute("PRAGMA query_only=ON")
         return db
 
+    def _opt(self, db: sqlite3.Connection, table: str, col: str) -> str:
+        """`col` when the table has it, else NULL (same row shape either way)."""
+        if self._cols is None:
+            cols = {t: {r[1] for r in db.execute(f"PRAGMA table_info({t})")} for t in ("sessions", "messages")}
+            if not all(cols.values()):
+                return "NULL"   # schema not written yet: ask again next tick
+            self._cols = cols
+        return col if col in self._cols.get(table, set()) else "NULL"
+
     def _poll(self) -> list[tuple[str, str, dict]]:
         out: list[tuple[str, str, dict]] = []
         if not self.db_path.exists():
@@ -160,11 +172,12 @@ class SubagentTail:
         db = self._connect()
         try:
             rows = db.execute(
-                "SELECT id, started_at, ended_at, end_reason, tool_call_count, input_tokens, output_tokens"
+                "SELECT id, started_at, ended_at, end_reason, tool_call_count, input_tokens, output_tokens,"
+                f" {self._opt(db, 'sessions', 'model')}, {self._opt(db, 'sessions', 'reasoning_tokens')}"
                 " FROM sessions WHERE parent_session_id = ? ORDER BY started_at, id",
                 (self.lead_session_id,),
             ).fetchall()
-            for sid, started, ended_at, end_reason, tcc, tin, tout in rows:
+            for sid, started, ended_at, end_reason, tcc, tin, tout, model, treason in rows:
                 s = self._sessions.get(sid)
                 if s is None:
                     s = self._sessions[sid] = _Session(sid, float(started or 0))
@@ -184,11 +197,14 @@ class SubagentTail:
                 if s.agent_id is None:
                     out += self._match(s)
                 out += self._messages(db, s)
-                usage = (int(tin or 0), int(tout or 0), int(tcc or 0))
+                usage = (int(tin or 0), int(tout or 0), int(tcc or 0), int(treason or 0), str(model or ""))
                 if usage != s.usage:
                     s.usage = usage
-                    out.append((s.emit_id, "usage", {"input_tokens": usage[0], "output_tokens": usage[1],
-                                                     "tool_call_count": usage[2]}))
+                    pl = {"input_tokens": usage[0], "output_tokens": usage[1], "tool_call_count": usage[2],
+                          "reasoning_tokens": usage[3]}
+                    if usage[4]:
+                        pl["model"] = usage[4]   # what the sub-agent really ran on
+                    out.append((s.emit_id, "usage", pl))
                 if ended_at and not s.ended:
                     s.ended = True
                     out += self._close(s, end_reason)
@@ -235,17 +251,21 @@ class SubagentTail:
     def _messages(self, db: sqlite3.Connection, s: _Session) -> list[tuple[str, str, dict]]:
         out: list[tuple[str, str, dict]] = []
         rows = db.execute(
-            "SELECT id, role, content, tool_calls, tool_name, tool_call_id, timestamp FROM messages"
-            " WHERE session_id = ? AND id > ? ORDER BY id",
+            "SELECT id, role, content, tool_calls, tool_name, tool_call_id, timestamp,"
+            f" {self._opt(db, 'messages', 'reasoning_content')}, {self._opt(db, 'messages', 'reasoning')}"
+            " FROM messages WHERE session_id = ? AND id > ? ORDER BY id",
             (s.sid, s.cursor),
         ).fetchall()
         first_user_seen = s.cursor > 0
-        for mid, role, content, tool_calls, tool_name, tool_call_id, ts in rows:
+        for mid, role, content, tool_calls, tool_name, tool_call_id, ts, rcontent, rtext in rows:
             s.cursor = mid
             if role == "user" and not first_user_seen:
                 first_user_seen = True  # the goal: already in spawn
                 continue
             if role == "assistant":
+                thought = rcontent or rtext
+                if isinstance(thought, str) and thought.strip():
+                    out.append((s.emit_id, "thought", {"text": thought[:MAX_TEXT * 4]}))
                 for tc in _tool_calls(tool_calls):
                     out.append((s.emit_id, "tool_call", tc | {"ts_db": ts}))
                 if content and content.strip():

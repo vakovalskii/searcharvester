@@ -59,7 +59,9 @@ def main() -> int:
     out = {
         "query": data.get("query"),
         "results": [
-            {"url": r.get("url"), "title": r.get("title"), "content": r.get("content")}
+            {"url": r.get("url"), "title": r.get("title"), "content": r.get("content"),
+             # images/videos: the picture, its preview, a video's length
+             **{k: r[k] for k in ("img_src", "thumbnail", "duration") if r.get(k)}}
             for r in data.get("results", [])
             if r.get("url")
         ],

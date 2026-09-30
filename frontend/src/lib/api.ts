@@ -17,6 +17,33 @@ export type JobStatus =
 
 export type Depth = "quick" | "deep";
 
+/** Agent roles of a job; a quick job has only the lead. Mirrors roles.py. */
+export type RoleKey = "lead" | "researcher" | "critic" | "fact_checker";
+export const ROLE_KEYS: RoleKey[] = ["lead", "researcher", "critic", "fact_checker"];
+export type Reasoning = "auto" | "off" | "low" | "medium" | "high";
+
+export interface RoleChoice {
+  model: string | null;
+  reasoning: Reasoning;
+}
+export type RoleModels = Record<RoleKey, RoleChoice>;
+
+/** A gateway model: `reasoning` true = it thinks, false = it never does
+ *  (e.g. a -noreason alias), null = the gateway does not say. */
+export interface ModelInfo {
+  id: string;
+  reasoning: boolean | null;
+  context: number | null;
+}
+
+export interface ModelOptions {
+  roles: RoleKey[];
+  reasoning: Reasoning[];
+  defaults: RoleModels;
+  models: ModelInfo[];
+  error: string | null;
+}
+
 export interface ResearchCreated {
   job_id: string;
   status: JobStatus;
@@ -32,6 +59,7 @@ export interface JobSnapshot {
   duration_sec: number | null;
   report: string | null;
   error: string | null;
+  models?: Partial<RoleModels> | null;
 }
 
 // --------- Agent events (mirror of events.py / Event dataclass) ---------
@@ -67,6 +95,7 @@ export interface JobListItem {
   started_at: string | null;
   duration_sec: number | null;
   parent_job?: string | null;
+  models?: Partial<RoleModels> | null;
 }
 
 export interface JobTerminalStatus {
@@ -83,15 +112,49 @@ export interface JobTerminalStatus {
  *  it, so a plain HTML form on a foreign site cannot start or cancel a job. */
 export const CLIENT_HEADERS = { "X-Searcharvester-Client": "1" } as const;
 
-export async function createResearch(query: string, depth: Depth = "quick"): Promise<ResearchCreated> {
+export async function createResearch(
+  query: string, depth: Depth = "quick", models?: Partial<RoleModels>,
+): Promise<ResearchCreated> {
   const r = await fetch(`${API_URL}/research`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...CLIENT_HEADERS },
-    body: JSON.stringify({ query, depth }),
+    body: JSON.stringify(models ? { query, depth, models } : { query, depth }),
   });
   if (!r.ok) {
     throw new Error(`POST /research failed: ${r.status} ${await r.text()}`);
   }
+  return r.json();
+}
+
+/** An image or video search handed to a job (media.py ledger). */
+export interface MediaItem {
+  kind: "image" | "video";
+  src: string;            // the image, or the video page
+  thumb: string | null;
+  page: string;           // where it lives
+  title: string;
+  duration?: string | null;
+  size?: string | null;
+  query?: string | null;
+}
+
+/** A picture of a job through the adapter: the browser never fetches foreign
+ *  sites, and the adapter serves only what search gave this job. */
+export function mediaUrl(jobId: string, src: string): string {
+  return `${API_URL}/media?job=${encodeURIComponent(jobId)}&src=${encodeURIComponent(src)}`;
+}
+
+export async function getJobMedia(jobId: string): Promise<MediaItem[]> {
+  const r = await fetch(`${API_URL}/research/${jobId}/media`);
+  if (r.status === 404) return [];
+  if (!r.ok) throw new Error(`GET /research/${jobId}/media: ${r.status}`);
+  return (await r.json()).items;
+}
+
+/** Models the gateway serves and the default of every role, for the pickers. */
+export async function getModelOptions(): Promise<ModelOptions> {
+  const r = await fetch(`${API_URL}/research/models`);
+  if (!r.ok) throw new Error(`GET /research/models: ${r.status}`);
   return r.json();
 }
 

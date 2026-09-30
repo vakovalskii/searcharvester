@@ -17,9 +17,12 @@ RUN uv pip install --no-cache-dir --python /opt/hermes/.venv/bin/python3 \
     "pytest==8.3.3" \
     "pytest-asyncio==0.24.0"
 
-# Hermes patches (streaming toggle for the vLLM tool_call bug, see the script).
+# Hermes patches (streaming toggle, iteration notice, per-role models; see the script).
 # A plain script instead of a heredoc RUN so the image builds without BuildKit too.
 COPY docker/patch_hermes.py /tmp/patch_hermes.py
+# Per-role models (see docker/searcharvester_roles.py): into the venv's
+# site-packages, importable whatever the cwd and entry point of Hermes.
+COPY docker/searcharvester_roles.py /opt/hermes/.venv/lib/python3.13/site-packages/searcharvester_roles.py
 RUN python3 /tmp/patch_hermes.py
 
 # tirith scans every terminal command before it runs (useful: the agent has a

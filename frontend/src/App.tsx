@@ -8,10 +8,12 @@ import AgentChat from "./components/AgentChat";
 import BudgetBars from "./components/BudgetBars";
 import SourcesPanel from "./components/SourcesPanel";
 import BranchView from "./components/BranchView";
+import MediaPanel from "./components/MediaPanel";
 import {
   API_URL,
   Depth,
   JobListItem,
+  RoleModels,
   cancelJob,
   checkHealth,
   createResearch,
@@ -66,7 +68,7 @@ export default function App() {
   const [store, setStore] = useState<Store>(new Map());
   const [activeId, setActiveId] = useState<string | null>(hashJob());
   const [selectedAgent, setSelectedAgent] = useState("lead");
-  type Tab = "report" | "branches" | "graph" | "sources";
+  type Tab = "report" | "branches" | "graph" | "sources" | "media";
   const [tabChoice, setTab] = useState<Tab | null>(null); // null: pick by what the job has
   const [focus, setFocus] = useState<string | null>(null);
   const subs = useRef(new Map<string, { close: () => void }>());
@@ -168,19 +170,19 @@ export default function App() {
     setSelectedAgent(id ?? "lead");
     setTab(null);
   };
-  const tabs: Tab[] = focusAgent ? ["report", "graph", "sources"] : ["report", "branches", "graph", "sources"];
+  const tabs: Tab[] = focusAgent ? ["report", "graph", "sources"] : ["report", "branches", "graph", "sources", "media"];
   const tab: Tab = tabChoice && tabs.includes(tabChoice) ? tabChoice
     : focusAgent ? (focusReport ? "report" : "graph")
     : record?.report ? "report" : "branches";
   const focusSources = focusAgent ? [...view.sources.values()].filter((x) => x.readers.includes(focusAgent.id)).length : 0;
   const tabName = (t: Tab) => t === "report" ? (focusAgent ? "Findings" : "Report")
     : t === "branches" ? `Branches${view.rounds.length ? ` (${view.rounds.length})` : ""}`
-    : t === "graph" ? "Graph" : `Sources (${focusAgent ? focusSources : view.sources.size})`;
+    : t === "graph" ? "Graph" : t === "media" ? "Media" : `Sources (${focusAgent ? focusSources : view.sources.size})`;
   const clock = useClock(running, listed?.started_at ?? null, running ? null : record?.durationSec ?? null);
 
-  const onSubmit = async (query: string, depth: Depth) => {
+  const onSubmit = async (query: string, depth: Depth, models?: Partial<RoleModels>) => {
     try {
-      const res = await createResearch(query, depth);
+      const res = await createResearch(query, depth, models);
       setStore((s) => withJob(s, res.job_id, () => ({ ...emptyRecord(res.job_id, query), status: "queued" })));
       open(res.job_id);
       refreshJobs();
@@ -313,15 +315,16 @@ export default function App() {
                 </div>
               )}
               {tab === "report" && focusAgent && (focusReport
-                ? <ReportView report={focusReport} onRunAgain={() => open(null)} />
+                ? <ReportView report={focusReport} jobId={activeId} onRunAgain={() => open(null)} />
                 : <div className="text-sm text-slate-500">
                     {["done", "failed", "stopped"].includes(focusAgent.state)
                       ? "This sub-agent ended without findings."
                       : "Still working. Its findings appear here when it finishes; follow its steps in the chat on the right."}
                   </div>)}
               {tab === "report" && !focusAgent && (record?.report
-                ? <ReportView report={record.report} onRunAgain={() => open(null)} />
+                ? <ReportView report={record.report} jobId={activeId} onRunAgain={() => open(null)} />
                 : <div className="text-sm text-slate-500">{running ? "The report appears when the agents finish. Watch the branches meanwhile." : "No report."}</div>)}
+              {tab === "media" && activeId && <MediaPanel jobId={activeId} live={running} report={record?.report ?? null} />}
               {tab === "sources" && <SourcesPanel view={focusAgent ? { ...view, sources: new Map(
                 [...view.sources].filter(([, src]) => src.readers.includes(focusAgent.id))) } : view}
                                                    onSelectAgent={setSelectedAgent} />}

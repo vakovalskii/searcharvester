@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronRight, FileText, Globe, Search, Terminal, Users, AlertTriangle } from "lucide-react";
 import type { Agent, ChatItem, JobView, ToolItem } from "../lib/view";
+import { ModelChip } from "./BranchView";
 
 interface Props {
   view: JobView;
@@ -52,7 +53,7 @@ function Item({ it }: { it: ChatItem }) {
     case "thought":
       return (
         <details className="text-xs text-slate-500">
-          <summary className="cursor-pointer select-none">thinking…</summary>
+          <summary className="cursor-pointer select-none">thinking… <span className="text-slate-600">{it.text.length.toLocaleString()} chars</span></summary>
           <div className="whitespace-pre-wrap mt-1">{it.text}</div>
         </details>
       );
@@ -102,6 +103,7 @@ export default function AgentChat({ view, selected, onSelect }: Props) {
       {agent && (
         <div className="px-3 py-1.5 text-[11px] text-slate-500 font-mono flex gap-3 border-b border-base-800">
           <span>{agent.state}</span>
+          {agent.model && <ModelChip a={agent} />}
           <span>{agent.toolCalls} calls</span>
           {(agent.tokensIn > 0 || agent.tokensOut > 0) && <span>{agent.tokensIn.toLocaleString()} in · {agent.tokensOut.toLocaleString()} out</span>}
           <label className="ml-auto flex items-center gap-1 cursor-pointer">

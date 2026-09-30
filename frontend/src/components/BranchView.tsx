@@ -1,5 +1,19 @@
 import type { Agent, ChatItem, JobView } from "../lib/view";
 import { agentReport } from "../lib/view";
+import { shortModel } from "../lib/models";
+
+/** Which model the agent ran on and whether it thought, as one quiet chip. */
+export function ModelChip({ a }: { a: Agent }) {
+  if (!a.model) return null;
+  const think = a.model.endsWith("-noreason") || a.reasoning === "off" ? ""
+    : a.reasoning && a.reasoning !== "auto" ? ` · ${a.reasoning}` : "";
+  return (
+    <span className="max-w-full truncate rounded border border-base-700 px-1.5 py-px text-[10px] font-mono text-slate-400"
+          title={`${a.model}${a.reasoning ? ` · thinking: ${a.reasoning}` : ""}${a.reasoningTokens ? ` · ${a.reasoningTokens} reasoning tokens` : ""}`}>
+      {shortModel(a.model)}{a.model.endsWith("-noreason") ? " · no think" : think}
+    </span>
+  );
+}
 
 interface Props {
   view: JobView;
@@ -40,7 +54,7 @@ function leadSegments(lead: Agent | undefined, roundCalls: string[]): ChatItem[]
   return segs;
 }
 
-function LeadStep({ title, items, onClick }: { title: string; items: ChatItem[]; onClick: () => void }) {
+function LeadStep({ title, items, onClick, lead }: { title: string; items: ChatItem[]; onClick: () => void; lead?: Agent }) {
   const tools = items.filter((i) => i.kind === "tool");
   if (tools.length === 0 && !items.some((i) => i.kind === "message" || i.kind === "note")) return null;
   const notes = items.filter((i) => i.kind === "note" && i.level !== "info");
@@ -50,6 +64,7 @@ function LeadStep({ title, items, onClick }: { title: string; items: ChatItem[];
       <div className="flex items-center gap-2 text-xs">
         <span className="font-mono text-slate-300">lead</span>
         <span className="text-slate-500">{title}</span>
+        {lead && <ModelChip a={lead} />}
         <span className="ml-auto font-mono text-slate-500">{tools.length} steps</span>
       </div>
       {labels.length > 0 && (
@@ -78,11 +93,13 @@ function AgentCard({ a, view, onOpen }: { a: Agent; view: JobView; onOpen: () =>
         <span className="text-sm font-medium text-slate-100 capitalize">{a.role}</span>
         <span className="ml-auto text-[11px] font-mono text-slate-500">{a.state}</span>
       </div>
+      {a.model && <div className="mt-1 flex"><ModelChip a={a} /></div>}
       <div className="mt-1 text-xs text-slate-400 line-clamp-2">{a.goal.replace(/^[^:]{1,30}:\s*/, "") || "task not known yet"}</div>
       <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] font-mono text-slate-500">
         <span>{count(a.items, "search")} searches</span>
         <span>{pages.length} pages{cited ? ` · ${cited} cited` : ""}</span>
         <span>{k(a.tokensIn)} tok</span>
+        {a.reasoningTokens > 0 && <span title="reasoning tokens">{k(a.reasoningTokens)} think</span>}
         <span>{secs(a.startTs, a.lastTs)}</span>
       </div>
       {answer && <div className="mt-2 text-[11px] text-slate-400 line-clamp-3 border-t border-base-800 pt-1.5">{answer.slice(0, 300)}</div>}
@@ -107,7 +124,7 @@ export default function BranchView({ view, hasReport, onOpenAgent, onOpenLead, o
         <span className="absolute -left-5 top-3 w-3 h-3 rounded-full border-2 border-slate-300 bg-base-950" />
         <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">question</div>
         <div className="text-sm text-slate-200">{view.query}</div>
-        <div className="mt-2"><LeadStep title="plans the research" items={segs[0] ?? []} onClick={onOpenLead} /></div>
+        <div className="mt-2"><LeadStep title="plans the research" items={segs[0] ?? []} onClick={onOpenLead} lead={lead} /></div>
       </li>
 
       {view.rounds.map((r, i) => (

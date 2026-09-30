@@ -1,14 +1,15 @@
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { Check, Copy, Download, RotateCw } from "lucide-react";
+import { linkCitations } from "../lib/citations";
+import SafeMarkdown from "./SafeMarkdown";
 
 interface Props {
   report: string;
+  jobId?: string | null;
   onRunAgain: () => void;
 }
 
-export default function ReportView({ report, onRunAgain }: Props) {
+export default function ReportView({ report, jobId, onRunAgain }: Props) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -64,24 +65,7 @@ export default function ReportView({ report, onRunAgain }: Props) {
         </div>
       </div>
       <article className="md-body px-6 py-5 overflow-x-auto">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          skipHtml
-          components={{
-            // Until /media (stage D) the browser must not fetch images from other sites.
-            img: ({ src, alt }) => (
-              <a href={String(src ?? "")} target="_blank" rel="noopener noreferrer">[image: {alt || src}]</a>
-            ),
-            a: ({ href, children }) =>
-              /^https?:/i.test(String(href ?? "")) ? (
-                <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
-              ) : (
-                <span>{children}</span>
-              ),
-          }}
-        >
-          {report}
-        </ReactMarkdown>
+        <SafeMarkdown text={linkCitations(report)} jobId={jobId} />
       </article>
     </div>
   );

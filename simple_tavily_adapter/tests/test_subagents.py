@@ -203,7 +203,8 @@ def test_failed_tool_and_usage(db):
     db.end("s1", tokens=(500, 50, 1))
     ev = t.poll()
     assert of(ev, "tool_result")[0][2]["status"] == "failed"
-    assert of(ev, "usage")[-1][2] == {"input_tokens": 500, "output_tokens": 50, "tool_call_count": 1}
+    assert of(ev, "usage")[-1][2] == {"input_tokens": 500, "output_tokens": 50, "tool_call_count": 1,
+                                          "reasoning_tokens": 0}
 
 
 def test_goal_prefixes_from_the_acp_preview_match_sessions(db):
@@ -279,3 +280,26 @@ def test_one_free_task_and_one_free_session_are_paired(db):
     db.call("s2", "c2", "y")
     ev = t.poll()
     assert of(ev, "tool_call", "sub-ee-2") and not of(ev, "spawn")
+
+
+def test_new_schema_brings_model_reasoning_tokens_and_thoughts(tmp_path):
+    """Hermes v0.21 state.db: sessions.model / reasoning_tokens, messages.reasoning_content."""
+    p = tmp_path / "state.db"
+    c = sqlite3.connect(p)
+    c.executescript(SCHEMA.replace("output_tokens INTEGER DEFAULT 0);",
+                                   "output_tokens INTEGER DEFAULT 0, model TEXT, reasoning_tokens INTEGER DEFAULT 0);")
+                          .replace("timestamp REAL NOT NULL);", "timestamp REAL NOT NULL, reasoning_content TEXT, reasoning TEXT);"))
+    c.execute("INSERT INTO sessions (id, source, parent_session_id, started_at, model, reasoning_tokens, input_tokens)"
+              " VALUES ('s1','subagent',?,1.0,'qwen3.8-27b',42,900)", (LEAD,))
+    c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES ('s1','user','Critic: attack it',1.0)")
+    c.execute("INSERT INTO messages (session_id, role, content, reasoning_content, timestamp)"
+              " VALUES ('s1','assistant','found it','the claim looks off',2.0)")
+    c.commit()
+    t = SubagentTail(p, LEAD)
+    t.register_spawn("sub-cc-1", "Critic: attack it", "call-C", 0)
+    ev = t.poll()
+    assert ("sub-cc-1", "thought", {"text": "the claim looks off"}) in ev
+    usage = [e for e in ev if e[1] == "usage"][-1][2]
+    assert usage["model"] == "qwen3.8-27b" and usage["reasoning_tokens"] == 42
+    kinds = [e[1] for e in ev if e[0] == "sub-cc-1"]
+    assert kinds.index("thought") < kinds.index("message")

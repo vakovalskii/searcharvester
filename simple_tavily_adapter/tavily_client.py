@@ -20,6 +20,11 @@ class TavilyResult(BaseModel):
     content: str
     score: float
     raw_content: str | None = None
+    # images/videos categories (Searcharvester extension; Tavily clients ignore it):
+    # the image itself, its preview, and a video's length.
+    img_src: str | None = None
+    thumbnail: str | None = None
+    duration: str | None = None
 
 
 class TavilyResponse(BaseModel):

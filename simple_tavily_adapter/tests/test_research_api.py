@@ -39,14 +39,14 @@ def test_post_research_returns_202_and_job_id(client):
     r = c.post("/research", json={"query": "what is RAG"})
     assert r.status_code == 202
     assert r.json() == {"job_id": "abcdef0123456789", "status": "queued"}
-    orch.spawn.assert_awaited_once_with(query="what is RAG", depth="deep")
+    assert orch.spawn.await_args.kwargs["query"] == "what is RAG" and orch.spawn.await_args.kwargs["depth"] == "deep"
 
 
 def test_post_research_quick_depth_is_passed(client):
     c, orch = client
     r = c.post("/research", json={"query": "who won", "depth": "quick"})
     assert r.status_code == 202
-    orch.spawn.assert_awaited_once_with(query="who won", depth="quick")
+    assert orch.spawn.await_args.kwargs["depth"] == "quick"
 
 
 def test_post_research_unknown_depth_is_422(client):

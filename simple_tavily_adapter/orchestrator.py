@@ -31,6 +31,7 @@ from typing import Any
 
 from events import Event, normalize_acp_update
 import permissions
+import roles
 from guard import JobGuard, Limits, Signal
 from subagents import SubagentTail
 
@@ -137,6 +138,8 @@ class Job:
     depth: str = "deep"   # deep = lead + sub-agent team, quick = one agent (guard.Limits.quick)
     created_at: datetime | None = None
     parent_job: str | None = None
+    # Model and reasoning mode per role (roles.py); empty = Hermes defaults.
+    models: dict[str, dict[str, Any]] = field(default_factory=dict)
     guard: JobGuard = field(default_factory=JobGuard)
     _guard_stop: asyncio.Event = field(default_factory=asyncio.Event)
     _cond: asyncio.Condition | None = None
@@ -196,7 +199,8 @@ class Orchestrator:
 
     # ---------- public API ----------
 
-    async def spawn(self, query: str, depth: str = "deep") -> str:
+    async def spawn(self, query: str, depth: str = "deep",
+                    models: dict[str, dict[str, Any]] | None = None) -> str:
         job_id = uuid.uuid4().hex[:16]
         workspace = self._jobs_dir / job_id
         workspace.mkdir(parents=True, exist_ok=True)
@@ -209,6 +213,7 @@ class Orchestrator:
             started_at=datetime.now(timezone.utc),
             created_at=datetime.now(timezone.utc),
             depth=depth,
+            models=dict(models or {}),
         )
         if depth == "quick":
             job.guard = JobGuard(limits=Limits.quick())
@@ -344,7 +349,8 @@ class Orchestrator:
             job_id=job_id, agent_id="lead", type="spawn",
             payload={"query": query, "skills": self._skills,
                      "hermes_bin": self._hermes_bin, "depth": job.depth,
-                     "parent_job": job.parent_job, "limits": asdict(job.guard.limits)},
+                     "parent_job": job.parent_job, "limits": asdict(job.guard.limits),
+                     "models": job.models},
         ))
 
         # Lazy import — acp SDK lives inside the hermes venv.
@@ -379,6 +385,9 @@ class Orchestrator:
             # counts and dedupes calls of all agents of this job together.
             "SEARCHARVESTER_JOB_ID": job.id,
         }
+        if job.models:
+            # The lead's and every sub-agent's model and reasoning (patch_hermes.py).
+            proc_env[roles.ENV] = roles.to_env(job.models)
 
         # Subprocess
         try:
@@ -621,6 +630,7 @@ class Orchestrator:
                 "started_at": job.started_at.isoformat() if job.started_at else None,
                 "finished_at": job.finished_at.isoformat() if job.finished_at else None,
                 "duration_sec": job.duration_sec, "status": job.status.value, "error": job.error,
+                "models": job.models,
             }
             if job.report is not None:
                 (d / "final_report.md").write_text(job.report, encoding="utf-8")
@@ -667,6 +677,7 @@ class Orchestrator:
         status = (lead_done[-1].get("payload") or {}).get("status") if lead_done else "interrupted"
         return {"id": job_id, "query": (lead_spawn.get("payload") or {}).get("query", ""),
                 "depth": (lead_spawn.get("payload") or {}).get("depth", "unknown"),
+                "models": (lead_spawn.get("payload") or {}).get("models") or {},
                 "created_at": lead_spawn.get("ts"), "started_at": lead_spawn.get("ts"),
                 "finished_at": lead_done[-1].get("ts") if lead_done else None,
                 "status": status if status in TERMINAL else "interrupted", "legacy": True}
@@ -699,7 +710,7 @@ class Orchestrator:
                             "created_at": job.created_at.isoformat() if job.created_at else None,
                             "started_at": job.started_at.isoformat() if job.started_at else None,
                             "duration_sec": job.duration_sec, "status": job.status.value,
-                            "parent_job": job.parent_job}
+                            "parent_job": job.parent_job, "models": job.models}
         rows = sorted(seen.values(), key=lambda m: m.get("created_at") or "", reverse=True)
         return rows[:limit]
 

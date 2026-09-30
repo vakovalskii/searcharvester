@@ -37,6 +37,8 @@ from orchestrator import Orchestrator, Job, JobStatus
 import reader
 import read_backends
 import read_log
+import roles
+import media
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -149,6 +151,10 @@ def _build_orchestrator() -> Orchestrator | None:
 
 
 orchestrator: Orchestrator | None = _build_orchestrator()
+model_catalog = roles.ModelCatalog.from_env()
+media_ledger = media.Ledger(orchestrator._state_dir if orchestrator is not None else
+                            FSPath(os.environ.get("STATE_DIR", "/srv/searxng-docker/state")))
+MEDIA_CATEGORIES = {"images", "videos"}
 
 
 # ---------- Read cascade ----------
@@ -348,8 +354,11 @@ async def search(
 ) -> dict[str, Any]:
     """Tavily-совместимый эндпойнт поиска."""
     guard = _job_guard(x_searcharvester_job)
+    category = (request.categories or "general").strip().lower()
+    # The same words as images or videos are another search, not a repeat.
+    guard_key = f"__{category}__ {request.query}" if category in MEDIA_CATEGORIES else request.query
     if guard is not None:
-        verdict, notice, cached = guard.on_search(request.query)
+        verdict, notice, cached = guard.on_search(guard_key)
         if verdict != "ok":
             logger.info("Search %s by loop guard: q=%r job=%s", verdict, request.query, x_searcharvester_job)
             return _guard_notice_response(request.query, notice, cached)
@@ -364,12 +373,15 @@ async def search(
     searxng_params = {
         "q": request.query,
         "format": "json",
-        "categories": request.categories or "general",
-        "engines": request.engines or "google,duckduckgo,brave",
+        "categories": category,
         "pageno": 1,
         "language": "auto",
         "safesearch": 1,
     }
+    # Web engines return pages, not pictures: images and videos keep SearXNG's
+    # own engines of the category unless the caller names some.
+    if request.engines or category not in MEDIA_CATEGORIES:
+        searxng_params["engines"] = request.engines or "google,duckduckgo,brave"
 
     headers = {
         "X-Forwarded-For": "127.0.0.1",
@@ -415,6 +427,7 @@ async def search(
         if not result.get("url"):
             continue
         raw_content = raw_contents.get(result["url"]) if request.include_raw_content else None
+        m = (media.items_from_results([result], category) or [{}])[0] if category in MEDIA_CATEGORIES else {}
         results.append(
             TavilyResult(
                 url=result["url"],
@@ -422,8 +435,19 @@ async def search(
                 content=result.get("content", ""),
                 score=0.9 - (i * 0.05),
                 raw_content=raw_content,
+                img_src=m.get("src") if m.get("kind") == "image" else None,
+                thumbnail=m.get("thumb"),
+                duration=m.get("duration"),
             )
         )
+    if category in MEDIA_CATEGORIES and guard is not None:
+        # The job's allow list for /media: only what search handed to this job.
+        try:
+            media_ledger.record(x_searcharvester_job,
+                                media.items_from_results(searxng_results[: request.max_results], category),
+                                query=request.query)
+        except Exception:
+            logger.warning("media ledger write failed for %s", x_searcharvester_job, exc_info=True)
 
     response_time = time.time() - start_time
 
@@ -431,7 +455,7 @@ async def search(
         query=request.query,
         follow_up_questions=None,
         answer=None,
-        images=[],
+        images=[r.img_src for r in results if r.img_src],
         results=results,
         response_time=response_time,
         request_id=request_id,
@@ -439,8 +463,12 @@ async def search(
 
     logger.info("Search done: %d results in %.2fs", len(results), response_time)
     body = response.model_dump()
+    for r in body["results"]:   # media fields only where they mean something
+        for k in ("img_src", "thumbnail", "duration"):
+            if r.get(k) is None:
+                r.pop(k, None)
     if guard is not None:
-        guard.remember_search(request.query, body)
+        guard.remember_search(guard_key, body)
     return body
 
 
@@ -496,11 +524,22 @@ async def extract_page(
 
 # ---------- /research ----------
 
+class RoleChoice(BaseModel):
+    # None keeps the default of the role (hermes-data/config.yaml model.default).
+    model: constr(pattern=roles.MODEL_ID_RE.pattern) | None = None  # type: ignore[valid-type]
+    reasoning: Literal["auto", "off", "low", "medium", "high"] | None = None
+
+
+RoleName = Literal["lead", "researcher", "critic", "fact_checker"]
+
+
 class ResearchRequest(BaseModel):
     query: constr(min_length=1, max_length=2000)  # type: ignore[valid-type]
     # quick: one agent, ~8 searches and page reads, for short factual questions;
     # deep: the lead + researchers + critic/fact-checker team.
     depth: Literal["quick", "deep"] = "deep"
+    # Model and reasoning per role; a quick job uses only `lead`.
+    models: dict[RoleName, RoleChoice] | None = None
 
 
 class ResearchCreated(BaseModel):
@@ -518,6 +557,7 @@ class ResearchStatus(BaseModel):
     duration_sec: float | None = None
     report: str | None = None
     error: str | None = None
+    models: dict[str, Any] | None = None
 
 
 def _ensure_orchestrator() -> Orchestrator:
@@ -543,6 +583,7 @@ def _job_to_status(job: Job) -> ResearchStatus:
         duration_sec=job.duration_sec,
         report=job.report,
         error=job.error,
+        models=job.models or None,
     )
 
 
@@ -587,10 +628,33 @@ def _job_artifacts(job: Job) -> dict[str, int]:
     return out
 
 
+def _role_defaults() -> dict[str, dict[str, Any]]:
+    return roles.defaults(os.environ.get("HERMES_HOME", "/opt/data"))
+
+
+@app.get("/research/models")
+async def research_models() -> dict[str, Any]:
+    """What the UI offers per role: the gateway's chat models with tool calls
+    (id, reasoning flag, context) and the default of each role."""
+    models = await asyncio.to_thread(model_catalog.models)
+    return {"roles": list(roles.ROLES), "reasoning": list(roles.REASONING),
+            "defaults": _role_defaults(), "models": models, "error": model_catalog.error}
+
+
 @app.post("/research", response_model=ResearchCreated, status_code=202)
 async def research_create(req: ResearchRequest) -> dict[str, str]:
     orch = _ensure_orchestrator()
-    job_id = await orch.spawn(query=req.query, depth=req.depth)
+    requested = {r: c.model_dump(exclude_none=True) for r, c in (req.models or {}).items()}
+    picked = {c["model"] for c in requested.values() if c.get("model")}
+    if picked:
+        # Refuse a model the gateway does not serve now, not an hour into the job.
+        # No list (gateway down, no capability) means no check: the job will say.
+        known = await asyncio.to_thread(model_catalog.ids)
+        unknown = sorted(picked - known) if known else []
+        if unknown:
+            raise HTTPException(status_code=422, detail=f"unknown model: {', '.join(unknown)}")
+    job_id = await orch.spawn(query=req.query, depth=req.depth,
+                              models=roles.resolve(requested, _role_defaults()))
     return {"job_id": job_id, "status": "queued"}
 
 
@@ -607,6 +671,7 @@ async def research_get(job_id: str = JOB_ID) -> ResearchStatus:
         job_id=job_id, status=meta.get("status", "interrupted"), query=meta.get("query", ""),
         depth=meta.get("depth"), started_at=meta.get("started_at"), finished_at=meta.get("finished_at"),
         duration_sec=meta.get("duration_sec"), report=orch.load_report(job_id, meta), error=meta.get("error"),
+        models=meta.get("models") or None,
     )
 
 
@@ -711,6 +776,54 @@ async def research_snapshot(job_id: str = JOB_ID) -> dict[str, Any]:
         "artifacts": _job_artifacts(job),
         "events": [e.to_dict() for e in events],
     }
+
+
+@app.get("/research/{job_id}/media")
+async def research_media(job_id: str = JOB_ID) -> dict[str, Any]:
+    """Images and videos search handed to this job, first seen first; the UI
+    shows them through /media."""
+    return {"job_id": job_id, "items": await asyncio.to_thread(media_ledger.items, job_id)}
+
+
+_MEDIA_HEADERS = {
+    "Cache-Control": "private, max-age=86400",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'",
+    "Content-Disposition": "inline",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+}
+
+
+@app.get("/media")
+async def media_get(job: constr(pattern=JOB_ID_RE), src: constr(min_length=8, max_length=2048)):  # type: ignore[valid-type]
+    """One image or preview of a job: only a src search gave this job (its ledger),
+    fetched by the adapter the safe way and cached; see media.py."""
+    from fastapi.responses import FileResponse, Response
+    src = await asyncio.to_thread(media_ledger.resolve, job, src)
+    if src is None:
+        raise HTTPException(status_code=404, detail="not a media item of this job")
+    hit = await asyncio.to_thread(media_ledger.cached, job, src)
+    if hit:
+        return FileResponse(hit[0], media_type=hit[1], headers=_MEDIA_HEADERS)
+    proxy = _reader_settings.proxy_url or None
+    try:
+        img = await media.fetch_image(src)
+    except media.MediaError as e:
+        if not (proxy and e.status in (502, 504) and not reader.is_domestic(src)):
+            raise HTTPException(status_code=e.status, detail=e.detail)
+        try:
+            img = await media.fetch_image(src, proxy=proxy)   # foreign host refused our IP
+        except media.MediaError as e2:
+            raise HTTPException(status_code=e2.status, detail=e2.detail)
+    f = media_ledger.cache_file(job, src, img.ext)
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix(f.suffix + ".tmp")
+        tmp.write_bytes(img.body)
+        os.replace(tmp, f)
+    except OSError:
+        logger.warning("media cache write failed for %s", job, exc_info=True)
+    return Response(content=img.body, media_type=media.TYPES[img.ext], headers=_MEDIA_HEADERS)
 
 
 @app.delete("/research/{job_id}")
