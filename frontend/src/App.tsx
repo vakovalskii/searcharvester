@@ -7,6 +7,7 @@ import AgentGraph from "./components/AgentGraph";
 import AgentChat from "./components/AgentChat";
 import BudgetBars from "./components/BudgetBars";
 import SourcesPanel from "./components/SourcesPanel";
+import BranchView from "./components/BranchView";
 import {
   API_URL,
   Depth,
@@ -65,7 +66,8 @@ export default function App() {
   const [store, setStore] = useState<Store>(new Map());
   const [activeId, setActiveId] = useState<string | null>(hashJob());
   const [selectedAgent, setSelectedAgent] = useState("lead");
-  const [tab, setTab] = useState<"report" | "sources">("report");
+  type Tab = "report" | "branches" | "graph" | "sources";
+  const [tabChoice, setTab] = useState<Tab | null>(null); // null: pick by what the job has
   const [focus, setFocus] = useState<string | null>(null);
   const subs = useRef(new Map<string, { close: () => void }>());
 
@@ -95,6 +97,7 @@ export default function App() {
     setActiveId(id);
     setSelectedAgent("lead");
     setFocus(null);
+    setTab(null);
   }, []);
 
   // Load / follow the active job. Every async result is written into ITS job's
@@ -163,7 +166,16 @@ export default function App() {
   const onFocus = (id: string | null) => {
     setFocus(id);
     setSelectedAgent(id ?? "lead");
+    setTab(null);
   };
+  const tabs: Tab[] = focusAgent ? ["report", "graph", "sources"] : ["report", "branches", "graph", "sources"];
+  const tab: Tab = tabChoice && tabs.includes(tabChoice) ? tabChoice
+    : focusAgent ? (focusReport ? "report" : "graph")
+    : record?.report ? "report" : "branches";
+  const focusSources = focusAgent ? [...view.sources.values()].filter((x) => x.readers.includes(focusAgent.id)).length : 0;
+  const tabName = (t: Tab) => t === "report" ? (focusAgent ? "Findings" : "Report")
+    : t === "branches" ? `Branches${view.rounds.length ? ` (${view.rounds.length})` : ""}`
+    : t === "graph" ? "Graph" : `Sources (${focusAgent ? focusSources : view.sources.size})`;
   const clock = useClock(running, listed?.started_at ?? null, running ? null : record?.durationSec ?? null);
 
   const onSubmit = async (query: string, depth: Depth) => {
@@ -265,35 +277,47 @@ export default function App() {
                 {!focusAgent && view.order.length > 1 && <span className="text-slate-600">· click a sub-agent to open its research</span>}
               </nav>
 
-              <div className="rounded-xl border border-base-800 bg-base-900/50 p-3 space-y-3">
-                <AgentGraph view={view} selected={selectedAgent} focus={focus} live={running}
-                            onSelect={setSelectedAgent} onFocus={onFocus} />
-                {!focusAgent && <BudgetBars guard={view.guard} />}
-                {focusAgent && (
-                  <div className="flex flex-wrap gap-3 text-xs font-mono text-slate-400">
-                    <span>{focusAgent.toolCalls} tool calls</span>
-                    <span>{focusFlows.filter((f) => f.kind === "query").length} searches</span>
-                    <span>{focusFlows.filter((f) => f.kind === "fetch").length} pages opened</span>
-                    <span>{Math.round(focusAgent.tokensIn / 1000)}k in / {Math.round(focusAgent.tokensOut / 1000)}k out</span>
-                    <span className="text-slate-500">{focusAgent.state}</span>
-                  </div>
-                )}
-              </div>
+              {!focusAgent && <BudgetBars guard={view.guard} />}
+              {focusAgent && (
+                <div className="flex flex-wrap gap-3 text-xs font-mono text-slate-400">
+                  <span>{focusAgent.toolCalls} tool calls</span>
+                  <span>{focusFlows.filter((f) => f.kind === "query").length} searches</span>
+                  <span>{focusFlows.filter((f) => f.kind === "fetch").length} pages opened</span>
+                  <span>{Math.round(focusAgent.tokensIn / 1000)}k in / {Math.round(focusAgent.tokensOut / 1000)}k out</span>
+                  <span className="text-slate-500">{focusAgent.state}</span>
+                </div>
+              )}
 
-              <div className="flex gap-4 border-b border-base-800 text-sm">
-                {(["report", "sources"] as const).map((t) => (
+              <div className="flex gap-4 border-b border-base-800 text-sm sticky top-0 bg-base-950/95 backdrop-blur z-10 pt-1">
+                {tabs.map((t) => (
                   <button key={t} onClick={() => setTab(t)}
-                          className={`pb-2 -mb-px border-b-2 ${tab === t ? "border-accent-500 text-slate-100" : "border-transparent text-slate-500"}`}>
-                    {t === "report" ? (focusAgent ? "Findings" : "Report") : `Sources (${focusAgent ? [...view.sources.values()].filter((x) => x.readers.includes(focusAgent.id)).length : view.sources.size})`}
+                          className={`pb-2 -mb-px border-b-2 ${tab === t ? "border-accent-500 text-slate-100" : "border-transparent text-slate-500 hover:text-slate-300"}`}>
+                    {tabName(t)}
                   </button>
                 ))}
               </div>
+
+              {tab === "branches" && (
+                <BranchView view={view} hasReport={Boolean(record?.report)} onOpenAgent={(id) => onFocus(id)}
+                            onOpenLead={() => setSelectedAgent("lead")} onOpenReport={() => setTab("report")} />
+              )}
+              {tab === "graph" && (
+                <div className="rounded-xl border border-base-800 bg-base-900/50 p-3">
+                  <AgentGraph view={view} selected={selectedAgent} focus={focus} live={running}
+                              onSelect={setSelectedAgent} onFocus={onFocus} />
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[11px] text-slate-500">
+                    <span><span className="inline-block w-2 h-2 rounded-full bg-emerald-400 mr-1" />page cited in the report</span>
+                    <span><span className="inline-block w-2 h-2 rounded-full bg-slate-500 mr-1" />page read, not cited</span>
+                    <span>dots running along edges: data moving right now (task, query, results, page, findings)</span>
+                  </div>
+                </div>
+              )}
               {tab === "report" && focusAgent && (focusReport
                 ? <ReportView report={focusReport} onRunAgain={() => open(null)} />
                 : <div className="text-sm text-slate-500">This sub-agent has not handed back its findings yet.</div>)}
               {tab === "report" && !focusAgent && (record?.report
                 ? <ReportView report={record.report} onRunAgain={() => open(null)} />
-                : <div className="text-sm text-slate-500">{running ? "The report appears when the agents finish." : "No report."}</div>)}
+                : <div className="text-sm text-slate-500">{running ? "The report appears when the agents finish. Watch the branches meanwhile." : "No report."}</div>)}
               {tab === "sources" && <SourcesPanel view={focusAgent ? { ...view, sources: new Map(
                 [...view.sources].filter(([, src]) => src.readers.includes(focusAgent.id))) } : view}
                                                    onSelectAgent={setSelectedAgent} />}

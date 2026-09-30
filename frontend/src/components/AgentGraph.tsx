@@ -118,7 +118,7 @@ export default function AgentGraph({ view, selected, focus, onSelect, onFocus, l
     s.readers.filter((r) => pos.has(r)).map((r) => ({ s, a: pos.get(r)!, b: pos.get(s.url)! })));
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto select-none" aria-label="agent graph">
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto max-h-[62vh] select-none" aria-label="agent graph">
       <style>{`
         @keyframes agp { 0% { opacity: .9; transform: scale(1) } 100% { opacity: 0; transform: scale(1.35) } }
         .ag-pulse { transform-box: fill-box; transform-origin: center; animation: agp 1.4s ease-out infinite }

@@ -39,6 +39,8 @@ export interface Agent {
   tokensOut: number;
   unmatched: boolean;
   lastTs: string;
+  startTs: string;
+  round: number;         // 0 for the lead, else which delegation round started it (1-based)
 }
 
 export interface Source {
@@ -75,6 +77,16 @@ export interface JobView {
   status: string | null; // lead's terminal status once done
   lastSeq: number;
   flows: Flow[];
+  rounds: Round[];       // the lead's delegations in order: the branches of the research
+}
+
+/** One delegate_task call of the lead and the sub-agents it started. */
+export interface Round {
+  index: number;         // 1-based
+  callId: string;
+  title: string;
+  seq: number;
+  agents: string[];
 }
 
 /** Events a person does not need to read; hidden unless "service events" is on. */
@@ -131,17 +143,18 @@ function stateForTool(tool: string): AgentState {
 function newAgent(id: string, parent: string | null, goal: string, ts: string, unmatched = false): Agent {
   return {
     id, parent, goal, role: roleOf(goal, id), state: "starting", items: goal ? [{ kind: "goal", text: goal, ts }] : [],
-    toolCalls: 0, tokensIn: 0, tokensOut: 0, unmatched, lastTs: ts,
+    toolCalls: 0, tokensIn: 0, tokensOut: 0, unmatched, lastTs: ts, startTs: ts, round: 0,
   };
 }
 
 export function reduce(events: AgentEvent[]): JobView {
   const view: JobView = {
     query: "", depth: "", agents: new Map(), order: [], sources: new Map(),
-    guard: { counters: {}, limits: {}, stoppedBy: null, warnings: [] }, status: null, lastSeq: 0, flows: [],
+    guard: { counters: {}, limits: {}, stoppedBy: null, warnings: [] }, status: null, lastSeq: 0, flows: [], rounds: [],
   };
   const flow = (ev: AgentEvent, from: string, to: string, kind: Flow["kind"], agentId: string) =>
     view.flows.push({ seq: ev.seq ?? 0, ts: ev.ts, from, to, kind, agent: agentId });
+  let finalGuard = false;
   const callTarget = new Map<string, { tool: string; url?: string }>(); // tool call id -> what it touched
   const alias = new Map<string, string>(); // provisional sub-db-* id -> canonical id
   const canon = (id: string) => alias.get(id) ?? id;
@@ -210,7 +223,10 @@ export function reduce(events: AgentEvent[]): JobView {
               existing.items.unshift({ kind: "goal", text: goal, ts: ev.ts });
             }
           } else {
-            view.agents.set(id, newAgent(id, parent ?? "lead", goal, ev.ts, Boolean(p.unmatched)));
+            const na = newAgent(id, parent ?? "lead", goal, ev.ts, Boolean(p.unmatched));
+            const byCall = view.rounds.find((r) => r.callId === String(p.delegate_call_id ?? ""));
+            na.round = byCall?.index ?? view.rounds.length;
+            view.agents.set(id, na);
             view.order.push(id);
             flow(ev, parent ?? "lead", id, "task", id); // one task hop per agent, even if we learned of it late
           }
@@ -246,6 +262,9 @@ export function reduce(events: AgentEvent[]): JobView {
                        result: null, status: "running", ts: ev.ts });
         a.toolCalls += 1; a.state = stateForTool(tool); a.lastTs = ev.ts;
         callTarget.set(String(p.id ?? ""), { tool });
+        if (id === "lead" && tool === "delegate" && !view.rounds.some((r) => r.callId === String(p.id ?? ""))) {
+          view.rounds.push({ index: view.rounds.length + 1, callId: String(p.id ?? `${ev.seq}`), title: label, seq: ev.seq ?? 0, agents: [] });
+        }
         if (tool === "search") flow(ev, id, "web", "query", id);
         if (tool === "extract") {
           const m = /--url\s+(?:\\?["'])?(\S+?)(?:\\?["'])?(?:\s|$)/.exec(`${title} ${JSON.stringify(p.raw_input ?? "")}`);
@@ -306,6 +325,7 @@ export function reduce(events: AgentEvent[]): JobView {
         if (id !== "lead" && st === "completed") flow(ev, id, "lead", "result", id);
         if (id === "lead") {
           view.status = st;
+          if (p.guard && typeof p.guard === "object") finalGuard = true;
           if (p.guard && typeof p.guard === "object") view.guard.counters = { ...view.guard.counters, ...(p.guard as Record<string, number>) };
           if (p.limits && typeof p.limits === "object") view.guard.limits = p.limits as Record<string, number>;
           if (typeof p.stopped_by_guard === "string") view.guard.stoppedBy = p.stopped_by_guard;
@@ -316,6 +336,9 @@ export function reduce(events: AgentEvent[]): JobView {
   }
   // lead first
   view.order = ["lead", ...view.order.filter((x) => x !== "lead")].filter((x) => view.agents.has(x));
+  glueOrphans(view);
+  for (const r of view.rounds) r.agents = view.order.filter((x) => view.agents.get(x)?.round === r.index);
+
   // The guard publishes its counters only with a warning or at the end, so between
   // those the bars would freeze. What the events show is a floor for them.
   const seen = { searches: 0, extracts: 0, input_tokens: 0, output_tokens: 0 };
@@ -330,8 +353,15 @@ export function reduce(events: AgentEvent[]): JobView {
   }
   for (const f of view.flows) if (f.kind === "fetch") urls.add(f.to);
   seen.extracts = urls.size;
-  for (const [k, v] of Object.entries(seen)) {
-    view.guard.counters[k] = Math.max(view.guard.counters[k] ?? 0, v);
+  // Once the job is done the guard's own totals are exact. Before that, events are a
+  // floor, capped by the limit: a call the guard refused still shows up as a tool call.
+  if (!finalGuard) {
+    const cap: Record<string, string> = { searches: "max_searches", extracts: "max_extracts", input_tokens: "max_input_tokens" };
+    for (const [k, v] of Object.entries(seen)) {
+      const lim = view.guard.limits[cap[k]];
+      const floor = typeof lim === "number" ? Math.min(v, lim) : v;
+      view.guard.counters[k] = Math.max(view.guard.counters[k] ?? 0, floor);
+    }
   }
   return view;
 }
@@ -358,4 +388,35 @@ export function agentReport(view: JobView, id: string): string | null {
 /** Everything one agent sent or received, in order: the drill-down timeline. */
 export function agentFlows(view: JobView, id: string): Flow[] {
   return view.flows.filter((f) => f.agent === id);
+}
+
+/**
+ * A sub-agent session we could not tie to its task at the time shows up as a
+ * provisional agent, and its task as an empty agent that never did anything.
+ * When a round has exactly one of each, they are the same agent: glue them.
+ */
+function glueOrphans(view: JobView): void {
+  const hasTools = (a: Agent) => a.items.some((i) => i.kind === "tool");
+  for (const oid of [...view.order]) {
+    const o = view.agents.get(oid);
+    if (!o || !o.unmatched || !hasTools(o)) continue;
+    const orphansHere = view.order.filter((x) => { const a = view.agents.get(x); return a?.unmatched && a.round === o.round && hasTools(a); });
+    const empty = view.order.filter((x) => { const a = view.agents.get(x); return a && x !== "lead" && !a.unmatched && a.round === o.round && !hasTools(a); });
+    if (orphansHere.length !== 1 || empty.length !== 1) continue;
+    const t = view.agents.get(empty[0])!;
+    t.items = [...t.items.filter((i) => i.kind === "goal"), ...o.items.filter((i) => i.kind !== "goal")];
+    t.toolCalls += o.toolCalls; t.tokensIn += o.tokensIn; t.tokensOut += o.tokensOut;
+    t.lastTs = o.lastTs; // the empty task's own "done" came late and synthetic; the session's steps are the truth
+    t.startTs = o.startTs < t.startTs ? o.startTs : t.startTs;
+    if (t.state === "done" || t.state === "starting") t.state = o.state;
+    for (const src of view.sources.values()) src.readers = [...new Set(src.readers.map((r) => (r === oid ? t.id : r)))];
+    view.flows = view.flows.filter((f) => !(f.kind === "task" && f.to === oid));
+    for (const f of view.flows) {
+      if (f.from === oid) f.from = t.id;
+      if (f.to === oid) f.to = t.id;
+      if (f.agent === oid) f.agent = t.id;
+    }
+    view.agents.delete(oid);
+    view.order = view.order.filter((x) => x !== oid);
+  }
 }

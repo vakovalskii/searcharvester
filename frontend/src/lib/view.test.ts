@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fixture from "./__fixtures__/deep-job.json";
+import twoRounds from "./__fixtures__/two-rounds-job.json";
 import type { AgentEvent } from "./api";
 import { agentFlows, agentReport, classifyTool, isService, reduce } from "./view";
 import { addEvents, emptyRecord, lastSeq, orderedEvents, withJob, type Store } from "./store";
@@ -210,5 +211,48 @@ describe("per-job store", () => {
     const before = s.get("a");
     s = addEvents(s, "a", [ev(1, "lead", "spawn")]);
     expect(s.get("a")).toBe(before);
+  });
+});
+
+describe("branches of a two-round job (fixture from a live run)", () => {
+  const job = (twoRounds as unknown) as AgentEvent[];
+  const v = reduce(job);
+
+  it("splits sub-agents by the delegation that started them", () => {
+    expect(v.rounds.map((r) => r.agents.length)).toEqual([3, 2]);
+    expect(v.rounds[0].agents.map((id) => v.agents.get(id)!.role)).toEqual(["researcher", "researcher", "researcher"]);
+    expect(v.rounds[1].agents.map((id) => v.agents.get(id)!.role).sort()).toEqual(["critic", "fact-checker"]);
+  });
+
+  it("glues the session we could not match live into its empty task", () => {
+    expect(v.order.some((id) => id.startsWith("sub-db-"))).toBe(false);
+    for (const id of v.rounds[0].agents) {
+      expect(v.agents.get(id)!.items.filter((i) => i.kind === "tool").length).toBeGreaterThan(10);
+    }
+    for (const f of v.flows) expect(f.agent.startsWith("sub-db-")).toBe(false);
+  });
+
+  it("after the end the budget shows the guard's own totals, not refused calls", () => {
+    expect(v.guard.counters.searches).toBe(40);
+    expect(v.guard.counters.extracts).toBe(46);
+  });
+
+  it("while running, counters never pass their limit", () => {
+    const cut = job.filter((e) => !(e.type === "done" && e.agent_id === "lead"));
+    const r = reduce(cut);
+    expect(r.guard.counters.searches).toBeLessThanOrEqual(r.guard.limits.max_searches);
+  });
+
+  it("does not glue when a round has two candidates", () => {
+    const r = reduce([
+      ev(1, "lead", "spawn", { query: "q" }),
+      ev(2, "lead", "tool_call", { id: "d1", title: "delegate_task: 2 tasks" }),
+      ev(3, "sub-a-1", "spawn", { goal: "Researcher: a", delegate_call_id: "d1" }),
+      ev(4, "sub-a-2", "spawn", { goal: "Researcher: b", delegate_call_id: "d1" }),
+      ev(5, "sub-db-x", "spawn", { goal: "", unmatched: true }),
+      ev(6, "sub-db-x", "tool_call", { id: "c1", title: "terminal: python3 search.py --query \"x\"" }),
+    ]);
+    expect(r.agents.has("sub-db-x")).toBe(true);
+    expect(r.rounds[0].agents).toContain("sub-db-x");
   });
 });
