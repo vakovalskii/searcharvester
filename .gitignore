@@ -67,3 +67,4 @@ acp-*.png
 
 # SimpleQA and other datasets are downloaded, not committed (bench/simpleqa.py)
 bench/data/
+state/

@@ -52,7 +52,7 @@ def tool_kind(payload: dict) -> str:
 
 def summarize(job_dir: Path) -> dict:
     events = []
-    ev_path = job_dir / "events.jsonl"
+    ev_path = next((q for q in (job_dir.parent.parent / "state" / job_dir.name / "events.jsonl", job_dir / "events.jsonl") if q.exists()), job_dir / "events.jsonl")
     if ev_path.exists():
         for line in ev_path.read_text(errors="replace").splitlines():
             try:

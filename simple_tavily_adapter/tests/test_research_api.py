@@ -17,6 +17,7 @@ def client(monkeypatch):
     mock_orch.cancel = AsyncMock(return_value=True)
     mock_orch.get = MagicMock(return_value=None)
     mock_orch.read_logs = MagicMock(return_value=None)
+    mock_orch.load_meta = MagicMock(return_value=None)
     monkeypatch.setattr(main, "orchestrator", mock_orch)
     return TestClient(main.app, base_url="http://localhost", headers={"X-Searcharvester-Client": "1"}), mock_orch
 

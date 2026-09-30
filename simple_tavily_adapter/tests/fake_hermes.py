@@ -13,6 +13,7 @@ contract the orchestrator must keep. The mode comes from FAKE_HERMES_MODE.
   loop_text         repeat the same line forever until cancelled; the wrap-up
                     turn then writes report.md
   same_error        log one tool error to stderr over and over, then hang
+  hang              say nothing and wait until cancelled
   kill_group        SIGTERM its whole process group, then write report.md
   env               dump the environment it got into env.json, then report.md
   write_outside     ask permission to write outside the workspace, then inside
@@ -84,6 +85,9 @@ class Fake(Agent):
             while not self.cancelled.is_set():
                 await self.say(session_id, "I will now search for the latest information about it.\n")
                 await asyncio.sleep(0.01)
+            return PromptResponse(stop_reason="cancelled")
+        elif MODE == "hang":
+            await self.cancelled.wait()
             return PromptResponse(stop_reason="cancelled")
         elif MODE == "same_error":
             for _ in range(20):

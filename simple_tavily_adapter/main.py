@@ -26,7 +26,7 @@ from typing import Any, Literal
 
 import aiohttp
 import trafilatura
-from fastapi import FastAPI, Header, HTTPException, Path
+from fastapi import FastAPI, Header, HTTPException, Path, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, constr
 from sse_starlette.sse import EventSourceResponse
@@ -144,6 +144,7 @@ def _build_orchestrator() -> Orchestrator | None:
         timeout_sec=int(os.environ.get("RESEARCH_TIMEOUT_SEC", "900")),
         max_concurrent=int(os.environ.get("MAX_CONCURRENT_JOBS", "12")),
         hermes_home=os.environ.get("HERMES_HOME", "/opt/data"),
+        state_dir=FSPath(os.environ.get("STATE_DIR", str(jobs_dir.parent / "state"))),
     )
 
 
@@ -509,6 +510,7 @@ class ResearchStatus(BaseModel):
     job_id: str
     status: str
     query: str
+    depth: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
     duration_sec: float | None = None
@@ -533,6 +535,7 @@ def _job_to_status(job: Job) -> ResearchStatus:
         job_id=job.id,
         status=job.status.value,
         query=job.query,
+        depth=job.depth,
         started_at=job.started_at.isoformat() if job.started_at else None,
         finished_at=job.finished_at.isoformat() if job.finished_at else None,
         duration_sec=job.duration_sec,
@@ -593,9 +596,23 @@ async def research_create(req: ResearchRequest) -> dict[str, str]:
 async def research_get(job_id: str = JOB_ID) -> ResearchStatus:
     orch = _ensure_orchestrator()
     job = orch.get(job_id)
-    if job is None:
+    if job is not None:
+        return _job_to_status(job)
+    meta = orch.load_meta(job_id)
+    if meta is None:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    return _job_to_status(job)
+    return ResearchStatus(
+        job_id=job_id, status=meta.get("status", "interrupted"), query=meta.get("query", ""),
+        depth=meta.get("depth"), started_at=meta.get("started_at"), finished_at=meta.get("finished_at"),
+        duration_sec=meta.get("duration_sec"), report=orch.load_report(job_id, meta), error=meta.get("error"),
+    )
+
+
+@app.get("/research")
+async def research_list(limit: int = 50) -> dict[str, Any]:
+    """Jobs for the sidebar, newest first: live ones and finished ones from disk."""
+    orch = _ensure_orchestrator()
+    return {"jobs": orch.list_jobs(limit=max(1, min(limit, 200)))}
 
 
 @app.get("/research/{job_id}/logs")
@@ -611,7 +628,7 @@ async def research_logs(job_id: str = JOB_ID) -> dict[str, str]:
 
 
 @app.get("/research/{job_id}/events")
-async def research_events(job_id: str = JOB_ID):
+async def research_events(request: Request, job_id: str = JOB_ID, after: int = 0):
     """SSE stream of typed agent events for a research job.
 
     Each event is a normalized dict — see events.Event for schema:
@@ -626,13 +643,32 @@ async def research_events(job_id: str = JOB_ID):
     """
     orch = _ensure_orchestrator()
     job = orch.get(job_id)
+    # Resume point: Last-Event-ID (EventSource reconnect) or ?after=<seq>.
+    try:
+        after = max(after, int(request.headers.get("last-event-id") or 0))
+    except ValueError:
+        pass
     if job is None:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        meta = orch.load_meta(job_id)
+        if meta is None:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+        async def disk_stream():
+            for d in orch.disk_events(job_id):
+                if d["seq"] > after:
+                    yield {"event": d.get("type", "note"), "id": str(d["seq"]),
+                           "data": json.dumps(d, ensure_ascii=False)}
+            yield {"event": "status", "data": json.dumps({
+                "job_id": job_id, "status": meta.get("status"), "duration_sec": meta.get("duration_sec"),
+                "has_report": orch.load_report(job_id, meta) is not None, "error": meta.get("error"),
+            }, ensure_ascii=False)}
+        return EventSourceResponse(disk_stream())
 
     async def event_stream():
-        async for ev in orch.subscribe(job_id):
+        async for ev in orch.subscribe(job_id, after=after):
             yield {
                 "event": ev.type,
+                "id": str(ev.seq),
                 "data": json.dumps(ev.to_dict(), ensure_ascii=False),
             }
         # Final status event (handy for clients that only care about the
@@ -660,7 +696,11 @@ async def research_snapshot(job_id: str = JOB_ID) -> dict[str, Any]:
     orch = _ensure_orchestrator()
     job = orch.get(job_id)
     if job is None:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        meta = orch.load_meta(job_id)
+        if meta is None:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        return {"job_id": job_id, "status": meta.get("status"), "phase": meta.get("status"),
+                "artifacts": {}, "events": orch.disk_events(job_id)}
     events = orch.snapshot(job_id)
     return {
         "job_id": job_id,

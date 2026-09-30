@@ -117,7 +117,7 @@ def run_one(adapter: str, jobs_dir: Path, row: dict, timeout: int, depth: str = 
     if not report and rp.exists():
         report = rp.read_text(errors="replace")
     done = {}
-    ev = jobs_dir / job_id / "events.jsonl"
+    ev = next((q for q in (jobs_dir.parent / "state" / job_id / "events.jsonl", jobs_dir / job_id / "events.jsonl") if q.exists()), jobs_dir / job_id / "events.jsonl")
     tools = {}
     if ev.exists():
         for line in ev.read_text(errors="replace").splitlines():

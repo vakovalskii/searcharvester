@@ -18,6 +18,7 @@ def orch(monkeypatch):
     o.spawn = AsyncMock(return_value="abcdef0123456789")
     o.cancel = AsyncMock(return_value=True)
     o.get = MagicMock(return_value=None)
+    o.load_meta = MagicMock(return_value=None)
     monkeypatch.setattr(main, "orchestrator", o)
     return o
 

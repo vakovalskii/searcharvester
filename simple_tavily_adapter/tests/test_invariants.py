@@ -265,3 +265,93 @@ def test_entrypoint_drops_privileges_without_gosu():
 @pytest.mark.skipif(not Path("/opt/hermes/agent/turn_api_call.py").exists(), reason="not in the image")
 def test_image_has_the_streaming_patch():
     assert "HERMES_DISABLE_STREAMING" in Path("/opt/hermes/agent/turn_api_call.py").read_text()
+
+
+# ---------------------------------------------------------------- stage A data
+
+def test_events_carry_a_gapless_seq_and_resume_after_it(tmp_path, monkeypatch):
+    job, _ = run_job(tmp_path, monkeypatch, "report")
+    seqs = [e.seq for e in job.events]
+    assert seqs == list(range(1, len(seqs) + 1))
+
+
+def test_spawn_carries_depth_and_limits_and_every_done_has_counters(tmp_path, monkeypatch):
+    for mode in ("report", "short_reply", "die_in_prompt"):
+        (tmp_path / mode).mkdir()
+        job, _ = run_job(tmp_path / mode, monkeypatch, mode, depth="quick")
+        spawn = next(e for e in job.events if e.type == "spawn" and e.agent_id == "lead")
+        assert spawn.payload["depth"] == "quick" and spawn.payload["limits"]["max_searches"] > 0
+        done = done_payload(job)
+        assert "guard" in done and "limits" in done, mode
+
+
+def test_job_survives_an_adapter_restart_on_disk(tmp_path, monkeypatch):
+    job, _ = run_job(tmp_path, monkeypatch, "report")
+    fresh = Orchestrator(hermes_bin="x", skills=[], jobs_dir=tmp_path / "jobs", env={},
+                         state_dir=tmp_path / "jobs")
+    meta = fresh.load_meta(job.id)
+    assert meta["status"] == "completed" and meta["query"] == "what is it"
+    assert fresh.load_report(job.id, meta).startswith("ANSWER: 42")
+    disk = fresh.disk_events(job.id)
+    assert [d["seq"] for d in disk] == [e.seq for e in job.events]
+    assert [j["id"] for j in fresh.list_jobs()] == [job.id]
+
+
+def test_fallback_report_is_on_disk_too(tmp_path, monkeypatch):
+    """A report that came as a chat reply (no report.md) must survive a restart."""
+    from orchestrator import JOB_META_FILENAME
+    job, _ = run_job(tmp_path, monkeypatch, "short_reply")
+    meta = json.loads((tmp_path / "jobs" / job.id / JOB_META_FILENAME).read_text())
+    assert meta["status"] == "failed"
+
+
+def test_restart_marks_queued_and_running_jobs_interrupted(tmp_path):
+    state = tmp_path / "state"
+    for jid, st in (("0000000000000001", "queued"), ("0000000000000002", "running"), ("0000000000000003", "completed")):
+        (state / jid).mkdir(parents=True)
+        (state / jid / "job.json").write_text(json.dumps({"id": jid, "query": "q", "status": st}))
+    orch = Orchestrator(hermes_bin="x", skills=[], jobs_dir=tmp_path / "jobs", env={}, state_dir=state)
+    got = {j["id"]: j["status"] for j in orch.list_jobs()}
+    assert got == {"0000000000000001": "interrupted", "0000000000000002": "interrupted",
+                   "0000000000000003": "completed"}
+    last = orch.disk_events("0000000000000002")[-1]
+    assert last["type"] == "done" and last["payload"]["status"] == "interrupted"
+
+
+def test_legacy_log_status_comes_from_the_lead_only(tmp_path):
+    jobs = tmp_path / "jobs"
+    d = jobs / "00000000000000aa"
+    d.mkdir(parents=True)
+    lines = [
+        {"ts": "t1", "job_id": "x", "agent_id": "lead", "parent_id": None, "type": "spawn", "payload": {"query": "old q"}},
+        {"ts": "t2", "job_id": "x", "agent_id": "sub-ab-1", "parent_id": "lead", "type": "done", "payload": {"status": "completed"}},
+    ]
+    (d / "events.jsonl").write_text("\n".join(json.dumps(x) for x in lines))
+    orch = Orchestrator(hermes_bin="x", skills=[], jobs_dir=jobs, env={}, state_dir=tmp_path / "state")
+    meta = orch.load_meta("00000000000000aa")
+    assert meta["status"] == "interrupted" and meta["query"] == "old q"
+    assert [e["seq"] for e in orch.disk_events("00000000000000aa")] == [1, 2]
+
+
+def test_cancel_of_a_running_job_stays_cancelled(tmp_path, monkeypatch):
+    """30.09: a cancelled job came out 'failed': the dying session wrote a second done."""
+    monkeypatch.setenv("FAKE_HERMES_MODE", "hang")
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    orch = Orchestrator(hermes_bin=_fake_bin(tmp_path), skills=["s"], jobs_dir=jobs, env={}, timeout_sec=60)
+
+    async def go():
+        jid = await orch.spawn("q", depth="deep")
+        while orch.get(jid).status != JobStatus.running or not any(e.type == "spawn" for e in orch.get(jid).events):
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.5)
+        assert await orch.cancel(jid)
+        for _ in range(100):  # let _run notice the dead process and try to fail the job
+            await asyncio.sleep(0.05)
+        return orch.get(jid)
+
+    job = asyncio.run(go())
+    assert job.status == JobStatus.cancelled
+    lead_done = [e for e in job.events if e.type == "done" and e.agent_id == "lead"]
+    assert [d.payload["status"] for d in lead_done] == ["cancelled"]
+    assert orch.load_meta(job.id)["status"] == "cancelled"

@@ -58,6 +58,7 @@ services:
       # Per-job workspaces (plan.md, notes.md, report.md, hermes.log,
       # events.jsonl). Exposed on the host for inspection / post-mortem.
       - ./jobs:/srv/searxng-docker/jobs:rw
+      - ./state:/srv/searxng-docker/state:rw
       # HERMES_HOME — config.yaml, SOUL.md, skills. Bundled skills get
       # synced on boot; our 3 custom skills ship alongside in skills/.
       - ./hermes-data:/opt/data:rw
@@ -65,6 +66,9 @@ services:
       - ./hermes_skills:/opt/searcharvester-skills:ro
     environment:
       - JOBS_DIR=/srv/searxng-docker/jobs
+      # Adapter-owned job state (job.json, events.jsonl, final report): outlives
+      # container recreation, the job list and old jobs are read from here.
+      - STATE_DIR=/srv/searxng-docker/state
       - HERMES_HOME=/opt/data
       - ADAPTER_URL_FOR_HERMES=http://localhost:8000
       - RESEARCH_TIMEOUT_SEC=1200
