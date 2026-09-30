@@ -32,18 +32,33 @@ The search endpoint lives at `$SEARCHARVESTER_URL` (default `http://tavily-adapt
 ### Basic search
 
 ```bash
-python3 SKILL_DIR/scripts/search.py --query "what is retrieval augmented generation" --max-results 5
+python3 /opt/data/skills/searcharvester-search/scripts/search.py --query "what is retrieval augmented generation" --max-results 5
 ```
 
 ### Pick a specific engine or category
 
 ```bash
 # Only DuckDuckGo + Brave
-python3 SKILL_DIR/scripts/search.py --query "GPT-5 release" --engines duckduckgo,brave --max-results 5
+python3 /opt/data/skills/searcharvester-search/scripts/search.py --query "GPT-5 release" --engines duckduckgo,brave --max-results 5
 
 # News category for fresh info
-python3 SKILL_DIR/scripts/search.py --query "OpenAI news today" --categories news --max-results 10
+python3 /opt/data/skills/searcharvester-search/scripts/search.py --query "OpenAI news today" --categories news --max-results 10
 ```
+
+### Images and videos
+
+```bash
+# Pictures: diagrams, charts, photos. Each hit has img_src (the image) and thumbnail.
+python3 /opt/data/skills/searcharvester-search/scripts/search.py --query "Python 3.13 free-threading benchmark chart" --categories images --max-results 8
+
+# Videos: talks, reviews, demos. Each hit has url (the video), thumbnail and duration.
+python3 /opt/data/skills/searcharvester-search/scripts/search.py --query "Python 3.13 release overview" --categories videos --max-results 6
+```
+
+Do not pass `--engines` here: the category has its own image and video engines.
+A media search counts against the research budget like any other search.
+Only these `img_src` / `thumbnail` addresses can be shown in a report: the UI
+displays a picture only if search returned it to this research.
 
 ### Output
 
@@ -56,7 +71,10 @@ JSON printed to stdout:
     {
       "url": "https://...",
       "title": "...",
-      "content": "short snippet from the search engine"
+      "content": "short snippet from the search engine",
+      "img_src": "https://... (images only)",
+      "thumbnail": "https://... (images and videos, when the engine has one)",
+      "duration": "8:45 (videos only)"
     }
   ]
 }

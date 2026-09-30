@@ -1,4 +1,7 @@
-FROM nousresearch/hermes-agent:latest
+# Pinned: `latest` moved to v0.21 (2026-09-24) and the old streaming patch anchor
+# is gone. Bump deliberately and re-run bench/ after every bump.
+ARG HERMES_VERSION=v2026.9.24
+FROM nousresearch/hermes-agent:${HERMES_VERSION}
 
 USER root
 
@@ -10,22 +13,26 @@ RUN uv pip install --no-cache-dir --python /opt/hermes/.venv/bin/python3 \
     "trafilatura>=1.12,<3.0" \
     "lxml>=4.9" \
     "beautifulsoup4==4.12.2" \
-    "sse-starlette==2.1.3"
+    "sse-starlette==2.1.3" \
+    "pytest==8.3.3" \
+    "pytest-asyncio==0.24.0"
 
-# Workaround for vLLM streaming tool_call bug (vllm#27641, fix in PR #35449 — not
-# yet merged as of v0.14.1). When stream=true, large prompts route tool-call JSON
-# into reasoning_content instead of the structured tool_calls array, so Hermes
-# thinks the model is narrating instead of calling tools. Non-streaming works
-# fine. Patch the one line in run_agent.py that toggles streaming.
-RUN python3 - <<'PY'
-path = '/opt/hermes/run_agent.py'
-src = open(path, encoding='utf-8').read()
-old = '_use_streaming = True\n                    # Provider signaled'
-new = '_use_streaming = False  # patched: vLLM streaming tool_call bug workaround (vllm#27641)\n                    # Provider signaled'
-assert old in src, 'streaming toggle anchor not found — upstream changed; update the patch'
-open(path, 'w', encoding='utf-8').write(src.replace(old, new))
-print('patched _use_streaming = False')
-PY
+# Hermes patches (streaming toggle, iteration notice, per-role models; see the script).
+# A plain script instead of a heredoc RUN so the image builds without BuildKit too.
+COPY docker/patch_hermes.py /tmp/patch_hermes.py
+# Per-role models (see docker/searcharvester_roles.py): into the venv's
+# site-packages, importable whatever the cwd and entry point of Hermes.
+COPY docker/searcharvester_roles.py /opt/hermes/.venv/lib/python3.13/site-packages/searcharvester_roles.py
+RUN python3 /tmp/patch_hermes.py
+
+# tirith scans every terminal command before it runs (useful: the agent has a
+# shell). Hermes downloads it on first use, which from some networks times out
+# and costs ~17s per terminal session. Install it at build time instead; the
+# installer verifies the SHA-256. Lookup order is PATH first, so /usr/local/bin wins.
+RUN cd /opt/hermes && HERMES_HOME=/tmp/tirith-home /opt/hermes/.venv/bin/python -c \
+      "from tools.tirith_security import _install_tirith; print(_install_tirith())" \
+ && install -m 0755 /tmp/tirith-home/bin/tirith /usr/local/bin/tirith \
+ && tirith --version
 
 RUN mkdir -p /app && chown hermes:hermes /app
 COPY --chown=hermes:hermes . /app/

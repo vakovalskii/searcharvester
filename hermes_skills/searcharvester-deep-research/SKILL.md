@@ -90,6 +90,11 @@ second round sees what the first round produced. Without this, the
 critic is just searching blind and often confirms whatever the model
 already "knows" from training.
 
+Start every task `goal` with its role exactly as below: `Researcher: ...`,
+`Critic: ...`, `Fact-checker: ...`. The prefix picks the model and the
+thinking mode the user chose for that role; a goal without it runs on the
+default model.
+
 #### Round 1 — Researchers only (parallel)
 
 ```python
@@ -206,6 +211,12 @@ METHOD:
 5. Target: 4–6 successful extracts, each actually read (not just
    fetched — if you never grep or head it, you don't know what's
    really in there).
+6. Only if a picture or a video would show the answer better than text
+   (a benchmark chart, an architecture diagram, a product photo, a talk
+   or a demo): ONE extra search with `--categories images` or
+   `--categories videos` (no --engines). Keep at most 2 hits that
+   really match the sub-question; skip logos, stock photos and hits
+   whose title is about something else.
 
 RETURN FORMAT (markdown only, no preamble):
 ### Findings
@@ -214,6 +225,10 @@ RETURN FORMAT (markdown only, no preamble):
   **URL**: https://...
 - **Claim**: ...
 (6–10 bullets total, each with a real URL)
+
+### Media (only if step 6 found something worth showing)
+- image: <img_src exactly as search.py printed it> | <caption> | <page url>
+- video: <video url> | <title> | <duration> | <thumbnail exactly as printed>
 
 ### Notes
 - Confidence: high / medium / low + one-line reason
@@ -372,6 +387,12 @@ When `delegate_task` returns:
 - What sources now say.
 - Why the newer answer wins (primary source, recency, etc.).>
 
+## Media
+<Include ONLY if researchers returned `### Media`. At most 4 images and
+3 videos, each next to what it shows:
+![<caption>](<img_src>) — [source](<page url>)
+[![<video title>](<thumbnail>)](<video url>) <video title>, <duration>>
+
 ## Caveats
 <Known limitations, unanswered parts.>
 
@@ -390,6 +411,10 @@ Hard rules:
 - No marketing adjectives unless quoted.
 - Numbers get units and dates.
 - Match the user's language.
+- Images and video previews: only `img_src` / `thumbnail` addresses a
+  search returned in this research, copied exactly. Never invent or
+  edit an image URL: the UI shows only pictures search handed out and
+  prints any other one as a bare link.
 
 ### Phase 4 — Deliver
 

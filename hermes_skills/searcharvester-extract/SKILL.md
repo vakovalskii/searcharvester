@@ -41,17 +41,17 @@ The extract endpoint lives at `$SEARCHARVESTER_URL` (default `http://tavily-adap
 ### Single page extraction
 
 ```bash
-python3 SKILL_DIR/scripts/extract.py --url "https://en.wikipedia.org/wiki/Docker_(software)" --size m
+python3 /opt/data/skills/searcharvester-extract/scripts/extract.py --url "https://en.wikipedia.org/wiki/Docker_(software)" --size m
 ```
 
 ### Full document with pagination
 
 ```bash
 # Page 1 (also returns metadata: total pages, id for follow-up pages)
-python3 SKILL_DIR/scripts/extract.py --url "https://long.example.com/article" --size f
+python3 /opt/data/skills/searcharvester-extract/scripts/extract.py --url "https://long.example.com/article" --size f
 
 # Fetch page 2 using id from first response
-python3 SKILL_DIR/scripts/extract.py --id b275618ca10e6c62 --page 2
+python3 /opt/data/skills/searcharvester-extract/scripts/extract.py --id b275618ca10e6c62 --page 2
 ```
 
 ### Output

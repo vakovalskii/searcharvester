@@ -1,27 +1,31 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Activity, Github } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Activity, Github, Square, Timer } from "lucide-react";
 import ResearchForm from "./components/ResearchForm";
-import JobStatusCard from "./components/JobStatusCard";
 import ReportView from "./components/ReportView";
-import DebugDrawer from "./components/DebugDrawer";
+import JobList from "./components/JobList";
+import AgentGraph from "./components/AgentGraph";
+import AgentChat from "./components/AgentChat";
+import BudgetBars from "./components/BudgetBars";
+import SourcesPanel from "./components/SourcesPanel";
+import BranchView from "./components/BranchView";
+import MediaPanel from "./components/MediaPanel";
 import {
   API_URL,
-  AgentEvent,
-  JobStatus,
-  JobTerminalStatus,
-  SSESubscription,
+  Depth,
+  JobListItem,
+  RoleModels,
   cancelJob,
   checkHealth,
   createResearch,
   getJob,
   getSnapshot,
+  listJobs,
   subscribeToJob,
 } from "./lib/api";
+import { Store, addEvents, emptyRecord, lastSeq, orderedEvents, withJob } from "./lib/store";
+import { agentFlows, agentReport, markReportSources, reduce } from "./lib/view";
 
-interface ActiveJob {
-  jobId: string;
-  query: string;
-}
+const TERMINAL = new Set(["completed", "failed", "timeout", "cancelled", "interrupted"]);
 
 function useHealth() {
   const [healthy, setHealthy] = useState<"ok" | "degraded" | "down">("down");
@@ -41,231 +45,299 @@ function useHealth() {
   return healthy;
 }
 
-/** Restore / persist current job_id via URL hash so reloading keeps it alive. */
-function useHashJob(): [
-  ActiveJob | null,
-  (j: ActiveJob | null) => void
-] {
-  const [job, setJob] = useState<ActiveJob | null>(null);
+function hashJob(): string | null {
+  const id = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("job");
+  return id && /^[0-9a-f]{16}$/.test(id) ? id : null;
+}
 
+function useClock(running: boolean, startedAt: string | null, durationSec: number | null): string {
+  const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    const parseHash = () => {
-      const raw = window.location.hash.replace(/^#/, "");
-      const params = new URLSearchParams(raw);
-      const id = params.get("job");
-      const q = params.get("q");
-      if (id && q) setJob({ jobId: id, query: q });
-      else setJob(null);
-    };
-    parseHash();
-    window.addEventListener("hashchange", parseHash);
-    return () => window.removeEventListener("hashchange", parseHash);
-  }, []);
-
-  const writeJob = useCallback((j: ActiveJob | null) => {
-    if (j) {
-      const p = new URLSearchParams({ job: j.jobId, q: j.query });
-      window.location.hash = p.toString();
-    } else {
-      history.replaceState(null, "", window.location.pathname);
-    }
-    setJob(j);
-  }, []);
-
-  return [job, writeJob];
+    if (!running) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+  const sec = durationSec ?? (startedAt ? Math.max(0, (now - new Date(startedAt).getTime()) / 1000) : 0);
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return m ? `${m}m ${s}s` : `${s}s`;
 }
 
 export default function App() {
   const healthy = useHealth();
-  const [job, setJob] = useHashJob();
-  const [events, setEvents] = useState<AgentEvent[]>([]);
-  const [finalStatus, setFinalStatus] = useState<JobTerminalStatus | null>(null);
-  const [report, setReport] = useState<string | null>(null);
-  const [jobSnapshot, setJobSnapshot] = useState<{
-    status: JobStatus;
-    error: string | null;
-    duration_sec: number | null;
-  } | null>(null);
-  const subRef = useRef<SSESubscription | null>(null);
+  const [jobs, setJobs] = useState<JobListItem[]>([]);
+  const [store, setStore] = useState<Store>(new Map());
+  const [activeId, setActiveId] = useState<string | null>(hashJob());
+  const [selectedAgent, setSelectedAgent] = useState("lead");
+  type Tab = "report" | "branches" | "graph" | "sources" | "media";
+  const [tabChoice, setTab] = useState<Tab | null>(null); // null: pick by what the job has
+  const [focus, setFocus] = useState<string | null>(null);
+  const subs = useRef(new Map<string, { close: () => void }>());
 
-  // (Re-)subscribe when the active job changes (includes hash restore).
-  useEffect(() => {
-    subRef.current?.close();
-    subRef.current = null;
-    setEvents([]);
-    setFinalStatus(null);
-    setReport(null);
-    setJobSnapshot(null);
-
-    if (!job) return;
-
-    let aborted = false;
-    (async () => {
-      const snapshot = await getJob(job.jobId).catch(() => null);
-      if (aborted) return;
-      if (snapshot === null) {
-        // Job unknown to the server — drop from URL (adapter likely restarted).
-        setJob(null);
-        return;
-      }
-
-      setJobSnapshot({
-        status: snapshot.status,
-        error: snapshot.error,
-        duration_sec: snapshot.duration_sec,
-      });
-      setReport(snapshot.report);
-
-      const terminal = ["completed", "failed", "timeout", "cancelled"];
-      if (terminal.includes(snapshot.status)) {
-        // Terminal job loaded via URL — still show the activity timeline
-        // by fetching the recorded event log one-shot.
-        const snap = await getSnapshot(job.jobId).catch(() => null);
-        if (!aborted && snap) setEvents(snap.events);
-        setFinalStatus({
-          job_id: snapshot.job_id,
-          status: snapshot.status,
-          duration_sec: snapshot.duration_sec,
-          has_report: snapshot.report !== null,
-          error: snapshot.error,
-        });
-        return;
-      }
-
-      const sub = subscribeToJob(
-        job.jobId,
-        (ev) => {
-          setEvents((prev) => [...prev, ev]);
-          if (ev.type === "done") {
-            const status = (ev.payload.status as JobStatus | undefined) ?? null;
-            if (status) {
-              setJobSnapshot((s) =>
-                s ? { ...s, status } : { status, error: null, duration_sec: null }
-              );
-            }
-          }
-        },
-        async (final) => {
-          setFinalStatus(final);
-          // Drain any events the SSE may have missed (backfilled sub-agent
-          // messages that got appended between our last yield and the status
-          // frame). Snapshot API sees everything the orchestrator recorded.
-          const snap = await getSnapshot(job.jobId).catch(() => null);
-          if (snap) setEvents(snap.events);
-          if (final.has_report) {
-            const jobSnap = await getJob(job.jobId).catch(() => null);
-            if (jobSnap?.report) setReport(jobSnap.report);
-          }
-        },
-        async () => {
-          const check = await getJob(job.jobId).catch(() => null);
-          if (check === null) setJob(null);
-        }
-      );
-      subRef.current = sub;
-    })();
-
-    return () => {
-      aborted = true;
-      subRef.current?.close();
-      subRef.current = null;
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [job?.jobId]);
-
-  const onSubmit = async (query: string) => {
+  const refreshJobs = useCallback(async () => {
     try {
-      const res = await createResearch(query);
-      setJob({ jobId: res.job_id, query });
+      setJobs(await listJobs(50));
+    } catch {
+      /* the list is a convenience; the open job keeps working */
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshJobs();
+    const id = window.setInterval(refreshJobs, 5000);
+    return () => clearInterval(id);
+  }, [refreshJobs]);
+
+  useEffect(() => {
+    const onHash = () => setActiveId(hashJob());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  const open = useCallback((id: string | null) => {
+    if (id) window.location.hash = `job=${id}`;
+    else history.replaceState(null, "", window.location.pathname);
+    setActiveId(id);
+    setSelectedAgent("lead");
+    setFocus(null);
+    setTab(null);
+  }, []);
+
+  // Load / follow the active job. Every async result is written into ITS job's
+  // record (withJob), so switching jobs mid-request never mixes two jobs.
+  useEffect(() => {
+    if (!activeId) return;
+    const jobId = activeId;
+    let cancelled = false;
+    (async () => {
+      const st = await getJob(jobId).catch(() => null);
+      if (cancelled) return;
+      if (!st) {
+        setStore((s) => withJob(s, jobId, (r) => ({ ...r, status: "interrupted", error: "job not found" })));
+        return;
+      }
+      setStore((s) => withJob(s, jobId, (r) => ({ ...r, query: st.query, status: st.status, report: st.report,
+                                                    error: st.error, durationSec: st.duration_sec })));
+      const snap = await getSnapshot(jobId).catch(() => null);
+      if (snap) setStore((s) => addEvents(s, jobId, snap.events));
+      if (cancelled || TERMINAL.has(st.status) || subs.current.has(jobId)) return;
+      const sub = subscribeToJob(
+        jobId,
+        (ev) => setStore((s) => addEvents(s, jobId, [ev])),
+        async (final) => {
+          subs.current.get(jobId)?.close();
+          subs.current.delete(jobId);
+          const done = await getJob(jobId).catch(() => null);
+          const snap2 = await getSnapshot(jobId).catch(() => null);
+          setStore((s) => {
+            let n = withJob(s, jobId, (r) => ({ ...r, status: final.status, error: final.error,
+                                                durationSec: final.duration_sec, report: done?.report ?? r.report }));
+            if (snap2) n = addEvents(n, jobId, snap2.events);
+            return n;
+          });
+          refreshJobs();
+        },
+        undefined,
+        snap ? Math.max(0, ...snap.events.map((e) => e.seq || 0)) : 0,
+      );
+      subs.current.set(jobId, sub);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId, refreshJobs]);
+
+  // Close streams of jobs that are no longer open.
+  useEffect(() => {
+    for (const [id, sub] of subs.current) {
+      if (id !== activeId) {
+        sub.close();
+        subs.current.delete(id);
+      }
+    }
+  }, [activeId]);
+  useEffect(() => () => { for (const s of subs.current.values()) s.close(); }, []);
+
+  const record = activeId ? store.get(activeId) : undefined;
+  const events = useMemo(() => orderedEvents(record), [record]);
+  const view = useMemo(() => markReportSources(reduce(events), record?.report ?? null), [events, record?.report]);
+  const running = Boolean(activeId && record && record.status && !TERMINAL.has(record.status));
+  const listed = jobs.find((j) => j.id === activeId);
+  const focusAgent = focus ? view.agents.get(focus) : undefined;
+  const focusReport = focus ? agentReport(view, focus) : null;
+  const focusFlows = focus ? agentFlows(view, focus) : [];
+  const onFocus = (id: string | null) => {
+    setFocus(id);
+    setSelectedAgent(id ?? "lead");
+    setTab(null);
+  };
+  const tabs: Tab[] = focusAgent ? ["report", "graph", "sources"] : ["report", "branches", "graph", "sources", "media"];
+  const tab: Tab = tabChoice && tabs.includes(tabChoice) ? tabChoice
+    : focusAgent ? (focusReport ? "report" : "graph")
+    : record?.report ? "report" : "branches";
+  const focusSources = focusAgent ? [...view.sources.values()].filter((x) => x.readers.includes(focusAgent.id)).length : 0;
+  const tabName = (t: Tab) => t === "report" ? (focusAgent ? "Findings" : "Report")
+    : t === "branches" ? `Branches${view.rounds.length ? ` (${view.rounds.length})` : ""}`
+    : t === "graph" ? "Graph" : t === "media" ? "Media" : `Sources (${focusAgent ? focusSources : view.sources.size})`;
+  const clock = useClock(running, listed?.started_at ?? null, running ? null : record?.durationSec ?? null);
+
+  const onSubmit = async (query: string, depth: Depth, models?: Partial<RoleModels>) => {
+    try {
+      const res = await createResearch(query, depth, models);
+      setStore((s) => withJob(s, res.job_id, () => ({ ...emptyRecord(res.job_id, query), status: "queued" })));
+      open(res.job_id);
+      refreshJobs();
     } catch (e) {
       alert(`Failed to start research: ${(e as Error).message}`);
     }
   };
 
   const onCancel = async () => {
-    if (!job) return;
-    await cancelJob(job.jobId);
+    if (activeId) await cancelJob(activeId);
+    refreshJobs();
   };
 
-  const onRunAgain = () => setJob(null);
-
-  const isRunning = job !== null && finalStatus === null;
-
   return (
-    <div className="min-h-full pb-12">
-      {/* Header */}
-      <header className="border-b border-base-800">
-        <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+    <div className="h-full flex flex-col">
+      <header className="border-b border-base-800 shrink-0">
+        <div className="px-4 py-2.5 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="text-2xl">🌾</div>
+            <div className="text-xl">🌾</div>
             <div>
-              <h1 className="text-lg font-semibold text-slate-100">Searcharvester</h1>
-              <div className="text-xs text-slate-500">Self-hosted deep research</div>
+              <h1 className="text-base font-semibold text-slate-100 leading-tight">Searcharvester</h1>
+              <div className="text-[11px] text-slate-500">Self-hosted research agents</div>
             </div>
           </div>
           <div className="flex items-center gap-4">
-            <div
-              className={`flex items-center gap-1.5 text-xs ${
-                healthy === "ok"
-                  ? "text-emerald-400"
-                  : healthy === "degraded"
-                  ? "text-amber-400"
-                  : "text-red-400"
-              }`}
-              title={`API: ${API_URL}`}
-            >
+            <div className={`flex items-center gap-1.5 text-xs ${healthy === "ok" ? "text-emerald-400"
+              : healthy === "degraded" ? "text-amber-400" : "text-red-400"}`} title={`API: ${API_URL}`}>
               <Activity size={12} className={healthy === "ok" ? "animate-pulse" : ""} />
               {healthy === "ok" ? "API connected" : healthy === "degraded" ? "orchestrator offline" : "API down"}
             </div>
-            <a
-              href="https://github.com/vakovalskii/searcharvester"
-              target="_blank"
-              rel="noreferrer"
-              className="text-slate-500 hover:text-slate-300 transition-colors"
-              aria-label="GitHub"
-            >
-              <Github size={16} />
-            </a>
+            <a href="https://github.com/vakovalskii/searcharvester" target="_blank" rel="noreferrer"
+               className="text-slate-500 hover:text-slate-300" aria-label="GitHub"><Github size={16} /></a>
           </div>
         </div>
       </header>
 
-      {/* Main */}
-      <main className="max-w-4xl mx-auto px-4 pt-8 space-y-5">
-        {!job && <ResearchForm onSubmit={onSubmit} disabled={healthy === "down"} />}
+      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)_420px]">
+        <div className="hidden lg:block border-r border-base-800 min-h-0">
+          <JobList jobs={jobs} activeId={activeId} onOpen={(j) => open(j.id)} onNew={() => open(null)} />
+        </div>
 
-        {job && (
-          <JobStatusCard
-            query={job.query}
-            jobId={job.jobId}
-            events={events}
-            finalStatus={finalStatus}
-            jobSnapshot={jobSnapshot}
-            onCancel={onCancel}
-          />
-        )}
+        <main className="min-h-0 overflow-y-auto p-4 space-y-4">
+          {!activeId && (
+            <div className="max-w-2xl mx-auto pt-10">
+              <ResearchForm onSubmit={onSubmit} disabled={healthy === "down"} />
+            </div>
+          )}
 
-        {job && (
-          <DebugDrawer
-            jobId={job.jobId}
-            events={events}
-            isRunning={isRunning}
-          />
-        )}
+          {activeId && (
+            <>
+              <div className="flex items-start gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                    {view.depth || listed?.depth || ""} research · <span className="font-mono">{activeId}</span>
+                  </div>
+                  <div className="text-lg text-slate-100 break-words">{view.query || record?.query || listed?.query}</div>
+                </div>
+                <div className="flex items-center gap-1.5 text-sm text-slate-400 font-mono shrink-0">
+                  <Timer size={14} /> {clock}
+                </div>
+                <span className={`text-xs px-2 py-1 rounded font-mono shrink-0 ${
+                  record?.status === "completed" ? "bg-emerald-500/15 text-emerald-300"
+                  : running ? "bg-sky-500/15 text-sky-300" : "bg-red-500/15 text-red-300"}`}>
+                  {record?.status ?? "…"}
+                </span>
+                {running && (
+                  <button onClick={onCancel} className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-red-500/40
+                                                        text-red-300 hover:bg-red-500/10 shrink-0">
+                    <Square size={12} /> Stop
+                  </button>
+                )}
+              </div>
 
-        {report && <ReportView report={report} onRunAgain={onRunAgain} />}
+              {view.guard.stoppedBy && (
+                <div className="text-sm rounded-lg border border-red-500/40 bg-red-500/10 text-red-200 px-3 py-2">
+                  Stopped by the loop guard: {view.guard.stoppedBy}
+                </div>
+              )}
+              {record?.error && !running && (
+                <div className="text-sm rounded-lg border border-base-700 text-slate-400 px-3 py-2">{record.error}</div>
+              )}
 
-        {job && finalStatus && !report && (
-          <div className="text-center">
-            <button
-              onClick={onRunAgain}
-              className="text-slate-400 hover:text-slate-100 underline text-sm"
-            >
-              Start a new research
-            </button>
-          </div>
-        )}
-      </main>
+              <nav className="flex items-center gap-1.5 text-xs text-slate-500" aria-label="breadcrumb">
+                <button onClick={() => onFocus(null)} className={focusAgent ? "hover:text-slate-200" : "text-slate-200"}>
+                  whole job
+                </button>
+                {focusAgent && (
+                  <>
+                    <span>›</span>
+                    <span className="text-slate-200">{focusAgent.role} {view.order.indexOf(focusAgent.id)}</span>
+                    <span className="text-slate-600 truncate">· {focusAgent.goal.slice(0, 120)}</span>
+                  </>
+                )}
+                {!focusAgent && view.order.length > 1 && <span className="text-slate-600">· click a sub-agent to open its research</span>}
+              </nav>
+
+              {!focusAgent && <BudgetBars guard={view.guard} />}
+              {focusAgent && (
+                <div className="flex flex-wrap gap-3 text-xs font-mono text-slate-400">
+                  <span>{focusAgent.toolCalls} tool calls</span>
+                  <span>{focusFlows.filter((f) => f.kind === "query").length} searches</span>
+                  <span>{focusFlows.filter((f) => f.kind === "fetch").length} pages opened</span>
+                  <span>{Math.round(focusAgent.tokensIn / 1000)}k in / {Math.round(focusAgent.tokensOut / 1000)}k out</span>
+                  <span className="text-slate-500">{focusAgent.state}</span>
+                </div>
+              )}
+
+              <div className="flex gap-4 border-b border-base-800 text-sm sticky top-0 bg-base-950/95 backdrop-blur z-10 pt-1">
+                {tabs.map((t) => (
+                  <button key={t} onClick={() => setTab(t)}
+                          className={`pb-2 -mb-px border-b-2 ${tab === t ? "border-accent-500 text-slate-100" : "border-transparent text-slate-500 hover:text-slate-300"}`}>
+                    {tabName(t)}
+                  </button>
+                ))}
+              </div>
+
+              {tab === "branches" && (
+                <BranchView view={view} hasReport={Boolean(record?.report)} onOpenAgent={(id) => onFocus(id)}
+                            onOpenLead={() => setSelectedAgent("lead")} onOpenReport={() => setTab("report")} />
+              )}
+              {tab === "graph" && (
+                <div className="rounded-xl border border-base-800 bg-base-900/50 p-3">
+                  <AgentGraph view={view} selected={selectedAgent} focus={focus} live={running}
+                              onSelect={setSelectedAgent} onFocus={onFocus} />
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[11px] text-slate-500">
+                    <span><span className="inline-block w-2 h-2 rounded-full bg-emerald-400 mr-1" />page cited in the report</span>
+                    <span><span className="inline-block w-2 h-2 rounded-full bg-slate-500 mr-1" />page read, not cited</span>
+                    <span>dots running along edges: data moving right now (task, query, results, page, findings)</span>
+                  </div>
+                </div>
+              )}
+              {tab === "report" && focusAgent && (focusReport
+                ? <ReportView report={focusReport} jobId={activeId} onRunAgain={() => open(null)} />
+                : <div className="text-sm text-slate-500">
+                    {["done", "failed", "stopped"].includes(focusAgent.state)
+                      ? "This sub-agent ended without findings."
+                      : "Still working. Its findings appear here when it finishes; follow its steps in the chat on the right."}
+                  </div>)}
+              {tab === "report" && !focusAgent && (record?.report
+                ? <ReportView report={record.report} jobId={activeId} onRunAgain={() => open(null)} />
+                : <div className="text-sm text-slate-500">{running ? "The report appears when the agents finish. Watch the branches meanwhile." : "No report."}</div>)}
+              {tab === "media" && activeId && <MediaPanel jobId={activeId} live={running} report={record?.report ?? null} />}
+              {tab === "sources" && <SourcesPanel view={focusAgent ? { ...view, sources: new Map(
+                [...view.sources].filter(([, src]) => src.readers.includes(focusAgent.id))) } : view}
+                                                   onSelectAgent={setSelectedAgent} />}
+            </>
+          )}
+        </main>
+
+        <div className="border-t lg:border-t-0 lg:border-l border-base-800 min-h-[420px] lg:min-h-0">
+          {activeId && lastSeq(record) > 0
+            ? <AgentChat view={view} selected={selectedAgent} onSelect={setSelectedAgent} />
+            : <div className="p-4 text-sm text-slate-500">Agent chats appear here once a job runs.</div>}
+        </div>
+      </div>
     </div>
   );
 }

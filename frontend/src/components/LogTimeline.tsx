@@ -12,7 +12,7 @@ import {
   BrainCog,
   Loader2,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
+import SafeMarkdown from "./SafeMarkdown";
 import { AgentEvent } from "../lib/api";
 
 interface Props {
@@ -165,6 +165,7 @@ function SubAgentCard({
   bucket: { subId: string; events: AgentEvent[]; goal: string; status: string };
 }) {
   const { subId, events, goal, status } = bucket;
+  const jobId = events[0]?.job_id ?? null;
   const isDone = status === "completed";
   const isError = status === "error" || status === "failed";
   const isRunning = status === "running";
@@ -233,7 +234,7 @@ function SubAgentCard({
       )}
       {summary && (
         <div className="px-2.5 py-2 text-xs text-slate-300 leading-relaxed max-h-64 overflow-y-auto subagent-md">
-          <ReactMarkdown>{summary}</ReactMarkdown>
+          <SafeMarkdown text={summary} jobId={jobId} />
         </div>
       )}
       {!summary && isRunning && (

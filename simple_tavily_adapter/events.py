@@ -24,6 +24,7 @@ EventType = Literal[
     "plan",          # agent emitted/updated a plan
     "commands",      # available-commands list updated
     "note",          # free-form note (warnings, retries)
+    "usage",         # token and tool-call counters of one agent (state.db)
     "done",          # agent session finished (lead: job complete)
 ]
 
@@ -36,6 +37,9 @@ class Event:
     parent_id: str | None   # None for lead, "lead" for first-level sub-agents
     type: EventType
     payload: dict[str, Any] = field(default_factory=dict)
+    # Position in the job's stream, from 1, set by the orchestrator on emit. SSE
+    # sends it as the event id so a reconnecting client resumes without dupes.
+    seq: int = 0
 
     @classmethod
     def now(
@@ -107,7 +111,11 @@ def normalize_acp_update(
         })
         events: list[Event] = [lead_ev]
         if _is_delegate_task(d.get("title")):
-            tasks = _extract_delegate_tasks(d.get("raw_input"))
+            # Hermes v0.21 sends raw_input=null for delegate_task over ACP; the
+            # numbered goal prefixes survive in the content preview and the title.
+            tasks = (_extract_delegate_tasks(d.get("raw_input"))
+                     or _tasks_from_preview(lead_ev.payload.get("preview"))
+                     or _tasks_from_title(d.get("title")))
             call_id = d.get("tool_call_id") or ""
             for i, task in enumerate(tasks, start=1):
                 sub_id = _sub_agent_id(call_id, i)
@@ -189,6 +197,30 @@ def _extract_delegate_tasks(raw_input: Any) -> list[Any]:
     if "goal" in raw_input:
         return [raw_input]
     return []
+
+
+def _tasks_from_preview(preview: Any) -> list[dict[str, Any]]:
+    """'Delegating 3 tasks\n\n1. Researcher: sub-question 1 — ...\n... (179 chars total, truncated)\n2. ...'"""
+    if not isinstance(preview, str):
+        return []
+    import re as _re
+    found = _re.findall(r"^(\d+)\.\s+(.+?)\s*$", preview, _re.M)
+    tasks = [{"goal": g.rstrip(".… "), "goal_prefix": True} for _, g in sorted(found, key=lambda x: int(x[0]))]
+    return tasks
+
+
+def _tasks_from_title(title: Any) -> list[dict[str, Any]]:
+    """'delegate_task: 3 tasks: Researcher 1: SDD — w... | Researcher 2: AI PDLC — w...'"""
+    if not isinstance(title, str):
+        return []
+    import re as _re
+    m = _re.match(r"\s*delegate[_ ]task:\s*(\d+)\s+tasks?:\s*(.*)$", title, _re.S)
+    if not m:
+        return []
+    parts = [p.strip().rstrip(".… ") for p in m.group(2).split(" | ")]
+    n = int(m.group(1))
+    parts = (parts + [""] * n)[:n]
+    return [{"goal": p, "goal_prefix": True} for p in parts]
 
 
 def _extract_delegate_results_from_text(text: str) -> list[dict[str, Any]] | None:

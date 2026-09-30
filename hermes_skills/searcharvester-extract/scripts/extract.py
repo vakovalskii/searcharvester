@@ -47,7 +47,7 @@ def _fetch_all_pages(base: str, url: str) -> tuple[dict, str]:
     req = urllib.request.Request(
         f"{base}/extract",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=_headers(),
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
@@ -75,6 +75,7 @@ def _fetch_all_pages(base: str, url: str) -> tuple[dict, str]:
         "title": first.get("title", ""),
         "total_chars": first.get("total_chars") or len(full),
         "pages_fetched": total_pages,
+        "notice": first.get("notice"),
     }
     return meta, full
 
@@ -87,6 +88,15 @@ def _save_extract(full_md: str, extract_id: str) -> str:
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(full_md)
     return os.path.relpath(out_path, os.getcwd())
+
+
+def _headers() -> dict:
+    """The job id lets the adapter's loop guard count and dedupe calls of all agents
+    of one research together (set by the orchestrator)."""
+    h = {"Content-Type": "application/json", "X-Searcharvester-Client": "1"}
+    if os.environ.get("SEARCHARVESTER_JOB_ID"):
+        h["X-Searcharvester-Job"] = os.environ["SEARCHARVESTER_JOB_ID"]
+    return h
 
 
 def main() -> int:
@@ -121,6 +131,11 @@ def main() -> int:
     except Exception as e:
         print(json.dumps({"error": type(e).__name__, "detail": str(e)}))
         return 1
+
+    if meta.get("notice") and not full:
+        # The research's loop guard closed page reads: tell the agent, save nothing.
+        print(json.dumps({"url": args.url, "notice": meta["notice"]}, ensure_ascii=False, indent=2))
+        return 0
 
     extract_id = meta["id"] or _extract_id(args.url)
     path = _save_extract(full, extract_id)

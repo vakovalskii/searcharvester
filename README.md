@@ -117,6 +117,30 @@ The agent reads the methodology, plans sub-queries, loops search→extract, synt
 
 LLM-agnostic — works with any OpenAI-compatible endpoint: OpenAI, OpenRouter, Anthropic (via LiteLLM), vLLM, Ollama, LM Studio.
 
+**Model per role.** A job can run each role on its own model and reasoning mode:
+`lead` (the orchestrator, the only agent of `depth: quick`), `researcher`, `critic`,
+`fact_checker`. `GET /research/models` lists the gateway's chat models with tool
+calls (`reasoning` true / false / null) and the defaults (`model.default` of
+`hermes-data/config.yaml`). Reasoning: `auto` sends nothing, `low|medium|high`
+set `reasoning_effort`, `off` asks the chat template to skip thinking (a gateway
+may pin it by model name, e.g. a `-noreason` alias). Omitted roles keep the default.
+
+```bash
+curl -sX POST localhost:8000/research -H 'X-Searcharvester-Client: 1' -H 'Content-Type: application/json' -d '{
+  "query": "compare vLLM vs SGLang", "depth": "deep",
+  "models": {"lead": {"model": "qwen3.6-fp8-noreason"},
+             "fact_checker": {"model": "gpt-oss-120b", "reasoning": "low"}}}'
+```
+
+**Images and videos.** `/search` with `categories: images|videos` uses the
+category's own engines and returns `img_src`, `thumbnail`, `duration` per hit
+(and `images[]`). For a research job the adapter keeps what it handed out in
+`STATE_DIR/<id>/media.jsonl`; `GET /research/{id}/media` lists it and
+`GET /media?job=<id>&src=<url>` serves one picture of that list, fetched by the
+adapter with the reader's SSRF rules, checked by its first bytes (png, jpeg, gif,
+webp, avif; 5 MB) and cached. Anything else is 404: a report can show only a
+picture search really gave that job.
+
 ```bash
 # Async flow
 JOB=$(curl -sX POST localhost:8000/research -d '{"query":"compare vLLM vs SGLang"}' | jq -r .job_id)
