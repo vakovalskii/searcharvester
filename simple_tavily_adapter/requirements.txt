@@ -6,6 +6,11 @@ beautifulsoup4==4.12.2
 pyyaml==6.0.1
 trafilatura>=1.12,<3.0
 lxml>=4.9.0
+# second extractor (Settings page: auto | trafilatura | readability); lxml 5.2+ moved
+# lxml.html.clean out into lxml_html_clean, which readability imports
+readability-lxml>=0.8.1,<1.0
+lxml_html_clean>=0.4
+markdownify>=0.13,<2.0
 docker==7.1.0
 sse-starlette==2.1.3
 httpx==0.27.2

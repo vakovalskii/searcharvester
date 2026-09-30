@@ -33,6 +33,12 @@ from urllib.parse import urljoin, urlparse
 import httpx
 import trafilatura
 
+try:  # optional second extractor, see extract_readability()
+    import markdownify as _markdownify
+    from readability import Document as _ReadabilityDoc
+except ImportError:  # pragma: no cover - the image always has them
+    _markdownify = _ReadabilityDoc = None
+
 logger = logging.getLogger(__name__)
 
 # ── Safety ─────────────────────────────────────────────────────────────────
@@ -225,6 +231,10 @@ _ANTIBOT_RE = re.compile(
 _MD_LINK_RE = re.compile(r"\[[^\]]*\]\([^)]+\)")
 
 
+EXTRACTORS = ("auto", "trafilatura", "readability")
+DEFAULT_EXTRACTOR = "auto"
+
+
 def extract(html: str, url: str, return_format: str = "markdown") -> tuple[str, str]:
     """(title, text). Text is empty when trafilatura finds nothing."""
     m = _TITLE_RE.search(html)
@@ -234,6 +244,63 @@ def extract(html: str, url: str, return_format: str = "markdown") -> tuple[str, 
         include_tables=True, include_comments=False, favor_recall=True,
     ) or ""
     return title, text
+
+
+def extract_readability(html: str, url: str, return_format: str = "markdown") -> tuple[str, str]:
+    """(title, text) by readability-lxml (Mozilla Readability port), empty when it fails.
+
+    Benchmark on the read log (2026-09-30): alone it passes the gate less often than
+    trafilatura on pages trafilatura already reads (19 vs 23 of 30), but on pages
+    trafilatura failed it pulls some through; hence "auto" runs both.
+    """
+    if _ReadabilityDoc is None:
+        return "", ""
+    try:
+        doc = _ReadabilityDoc(html, url=url)
+        body = doc.summary(html_partial=True)
+        title = re.sub(r"\s+", " ", doc.short_title() or "").strip()[:300]
+    except Exception:  # noqa: BLE001 - broken markup is a miss, not an error
+        return "", ""
+    if return_format == "markdown":
+        text = _markdownify.markdownify(body, heading_style="ATX", strip=["img"]) or ""
+    else:
+        text = _TAG_RE.sub(" ", body)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return title, text
+
+
+_RANK = {"ok": 2, "judge": 1, "reject": 0}
+_MD_LINK_TARGET_RE = re.compile(r"\[([^\]]*)\]\([^)]+\)")
+
+
+def _reading_len(text: str) -> int:
+    """Length a reader sees: [label](url) counts as label. readability keeps inline links
+    and trafilatura mostly drops them, so raw length favoured readability for URLs alone
+    (Wikipedia: 51k with 346 links vs 37k with none, same article)."""
+    return len(_MD_LINK_TARGET_RE.sub(r"\1", text))
+
+
+def extract_best(html: str, url: str, return_format: str, extractor: str):
+    """[(name, title, text, sig, decision, reason)] best first, by gate verdict then length.
+
+    trafilatura / readability give one candidate; auto gives both, so the longer text
+    (by _reading_len, link targets excluded) wins only among candidates the gate does
+    not reject.
+    """
+    names = ("trafilatura", "readability") if extractor == "auto" else (extractor,)
+    out = []
+    for name in names:
+        fn = extract_readability if name == "readability" else extract
+        title, text = fn(html, url, return_format)
+        if not title:
+            m = _TITLE_RE.search(html)
+            title = re.sub(r"\s+", " ", m.group(1)).strip()[:300] if m else ""
+        sig = signals(html, text, title)
+        decision, reason = gate(sig)
+        out.append((name, title, text, sig, decision, reason))
+    out.sort(key=lambda c: (_RANK[c[4]], _reading_len(c[2])), reverse=True)
+    return out
 
 
 def signals(html: str, text: str, title: str) -> dict:
@@ -347,6 +414,7 @@ class Trace:
     fast_ms: Optional[int] = None
     gate_decision: Optional[str] = None
     gate_reason: Optional[str] = None
+    extractor: Optional[str] = None
     signals: dict = field(default_factory=dict)
     judge_ok: Optional[bool] = None
     judge_reason: Optional[str] = None
@@ -397,11 +465,14 @@ async def read_page(url: str, settings, *, reader_fn: ReaderFn, browser_fn: Brow
             tr.fast_ms = int((time.monotonic() - t0) * 1000)
             return res
         if f.html:
-            title, text = extract(f.html, f.final_url or url, return_format)
+            extractor = getattr(settings, "extractor", "") or DEFAULT_EXTRACTOR
+            if extractor not in EXTRACTORS:
+                extractor = DEFAULT_EXTRACTOR
+            name, title, text, sig, decision, reason = extract_best(
+                f.html, f.final_url or url, return_format, extractor)[0]
+            tr.extractor = name
             res.html, res.final_url, res.title = f.html, f.final_url or url, title
             res.any_completed = True
-            sig = signals(f.html, text, title)
-            decision, reason = gate(sig)
             tr.fast_chars, tr.signals = len(text), sig
             tr.gate_decision, tr.gate_reason = decision, reason
             if decision == "judge":

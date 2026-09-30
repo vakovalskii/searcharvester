@@ -12,6 +12,9 @@ RUN apt-get update \
 RUN uv pip install --no-cache-dir --python /opt/hermes/.venv/bin/python3 \
     "trafilatura>=1.12,<3.0" \
     "lxml>=4.9" \
+    "readability-lxml>=0.8.1,<1.0" \
+    "lxml_html_clean>=0.4" \
+    "markdownify>=0.13,<2.0" \
     "beautifulsoup4==4.12.2" \
     "sse-starlette==2.1.3" \
     "pytest==8.3.3" \

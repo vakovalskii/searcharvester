@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CheckCircle2, KeyRound, Loader2, Plus, RefreshCw, RotateCw, Search, Trash2, XCircle } from "lucide-react";
-import type { AdminStatus, ApplyResult, EngineRow, ProbeResult } from "../lib/admin";
+import type { AdminStatus, ApplyResult, EngineRow, Extractor, ProbeResult } from "../lib/admin";
 import {
-  ADMIN_URL, AdminError, categoryEngines, errorRate, getStatus, loadToken, probeCategory, putSettings,
+  ADMIN_URL, AdminError, categoryEngines, errorRate, EXTRACTORS, getStatus, loadToken, probeCategory, putSettings,
   restartSearxng, saveToken, testProxy,
 } from "../lib/admin";
 
@@ -135,6 +135,7 @@ export default function SettingsPage() {
   const [rt, setRt] = useState(""), [mrt, setMrt] = useState("");
   const [defaults, setDefaults] = useState<Record<string, string>>({});
   const [readerProxy, setReaderProxy] = useState("");
+  const [extractor, setExtractor] = useState<Extractor>("auto");
   const [probes, setProbes] = useState<Record<string, ProbeResult>>({});
   const [probing, setProbing] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -150,6 +151,7 @@ export default function SettingsPage() {
       setRt(s.effective.request_timeout?.toString() ?? ""); setMrt(s.effective.max_request_timeout?.toString() ?? "");
       setDefaults(Object.fromEntries(Object.entries(s.overrides.adapter.default_engines).map(([k, v]) => [k, v.join(",")])));
       setReaderProxy(s.overrides.adapter.reader_proxy ?? "");
+      setExtractor(s.overrides.adapter.extractor ?? "auto");
     } catch (e) {
       const ae = e as AdminError;
       if (ae.status === 401) { saveToken(""); setToken(""); }
@@ -177,7 +179,8 @@ export default function SettingsPage() {
     || num(rt) !== (st.effective.request_timeout ?? null) || num(mrt) !== (st.effective.max_request_timeout ?? null);
   const defaultsNow = Object.fromEntries(Object.entries(defaults).filter(([, v]) => v.trim()));
   const defaultsWas = Object.fromEntries(Object.entries(ov.adapter.default_engines).map(([k, v]) => [k, v.join(",")]));
-  const dirtyAdapter = JSON.stringify(defaultsNow) !== JSON.stringify(defaultsWas) || (readerProxy || null) !== (ov.adapter.reader_proxy || null);
+  const dirtyAdapter = JSON.stringify(defaultsNow) !== JSON.stringify(defaultsWas) || (readerProxy || null) !== (ov.adapter.reader_proxy || null)
+    || extractor !== (ov.adapter.extractor ?? "auto");
 
   const apply = async () => {
     setApplying(true); setResult(null);
@@ -191,6 +194,7 @@ export default function SettingsPage() {
         adapter: {
           default_engines: Object.fromEntries(st.categories.map((c) => [c, (defaults[c] ?? "").split(",").map((x) => x.trim()).filter(Boolean)])),
           reader_proxy: readerProxy.trim() || null,
+          extractor,
         },
       };
       const r = await putSettings(token, body);
@@ -325,6 +329,20 @@ export default function SettingsPage() {
           {Object.keys(defaultsNow).length > 0 && (
             <div className="text-[11px] text-slate-500">set: {Object.entries(defaultsNow).map(([k, v]) => `${k}: ${v}`).join(" · ")}</div>
           )}
+        </div>
+      </Section>
+
+      <Section title="Page extractor" hint="Which extractor turns a fetched page into text for /extract and search raw_content. Applied at once, no restart.">
+        <div className="space-y-2">
+          <div className="flex flex-wrap gap-1.5">
+            {EXTRACTORS.map((x) => (
+              <button key={x.id} type="button" onClick={() => setExtractor(x.id)}
+                      className={`px-2 py-1 rounded border text-xs ${extractor === x.id ? "border-accent-500 bg-accent-500/15 text-slate-100" : "border-base-700 text-slate-400"}`}>
+                <span className="font-mono">{x.id}</span>
+              </button>
+            ))}
+          </div>
+          <div className="text-[11px] text-slate-500">{EXTRACTORS.find((x) => x.id === extractor)?.hint}</div>
         </div>
       </Section>
 

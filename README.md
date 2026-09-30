@@ -7,7 +7,7 @@
 One `docker compose up` gives you:
 
 - **`/search`**: Tavily-compatible search via SearXNG (100+ engines), including images and videos
-- **`/extract`**: URL → clean markdown via trafilatura, with size presets and pagination
+- **`/extract`**: URL → clean markdown via trafilatura and/or readability, with size presets and pagination
 - **`/research`**: a deep research agent team. Ask a question, get back a markdown report with citations
 - **Web UI** on `:9762`: start jobs, pick a model per agent role, follow every agent live, read the report, browse sources and media
 - **Search settings** in the same UI: SearXNG engines, proxies and timeouts, applied with a SearXNG restart
@@ -93,8 +93,18 @@ settings page, then `google,duckduckgo,brave` for web search. With `categories: 
 
 ### 2️⃣ `POST /extract`: URL → clean markdown
 
-Fetches the page, runs [trafilatura](https://github.com/adbar/trafilatura) (strips nav, footer and
-ads, keeps headings, lists, tables and links) and returns markdown.
+Fetches the page, extracts the main text (strips nav, footer and ads, keeps headings, lists,
+tables and links) and returns markdown. The extractor is picked on the settings page:
+
+| Extractor | What it does |
+|---|---|
+| `auto` (default) | runs both below, keeps the text the quality gate rates best, then the longer one |
+| `trafilatura` | [trafilatura](https://github.com/adbar/trafilatura) only, the behaviour before 2026-09-30 |
+| `readability` | [python-readability](https://github.com/buriy/python-readability) (Mozilla Readability port) only |
+
+On 87 pages from our read log, `auto` kept every page trafilatura already read and cut hard-page
+rejects from 33 to 26 of 57. Every read logs which extractor won (`extractor` in `page_read_log`).
+When the fast path fails the gate, the read goes on to the paid reader and the browser as before.
 
 | Size | Chars | Use case |
 |---|---|---|
@@ -112,6 +122,12 @@ curl -s localhost:8000/extract/abc123/2     # next pages, no re-download
 
 Cache keyed by `md5(url)[:16]`, TTL 30 minutes. Page reads go through the reader's SSRF rules
 (no private addresses, pinned DNS). A reader proxy can be set on the settings page.
+
+**Free exit proxy (optional).** `docker compose --profile warp up -d` also starts `warp`, a
+[Cloudflare WARP](https://github.com/Mon-ius/Docker-Warp-Socks) socks5/http proxy with no account
+and no extra privileges. Put `socks5h://warp:9091` into the reader proxy or the SearXNG proxy list.
+Some networks block WARP (its registration API or tunnel): then the container exits, and
+`docker logs warp` shows a TLS or connect error. Use your own proxy there.
 
 ### 3️⃣ `POST /research`: deep research team
 
@@ -210,7 +226,8 @@ Finished jobs stay on disk (`jobs/`, `state/`) and survive restarts.
   `socks4`, `socks5`, `socks5h`), with a test button, plus request and max request timeouts.
 - **Engines**: on/off per engine by category, SearXNG's own error stats, and a **check** button
   that runs one search in the category and shows which engines answered.
-- **Adapter**: default engines per category and a proxy for page reads (`/extract` and pictures).
+- **Adapter**: default engines per category, a proxy for page reads (`/extract` and pictures) and
+  the page extractor (`auto`, `trafilatura`, `readability`).
 
 **Apply** validates and saves, renders SearXNG's `settings.yml` and restarts SearXNG only if its part
 changed (2 to 4 s). Adapter settings apply without a restart. The page needs `SEARCH_ADMIN_TOKEN`.
