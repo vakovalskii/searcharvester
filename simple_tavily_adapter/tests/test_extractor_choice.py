@@ -156,3 +156,39 @@ def test_old_read_log_gets_the_extractor_column(tmp_path, monkeypatch):
     asyncio.run(read_log.log(tr))
     with sqlite3.connect(db) as c:
         assert c.execute("select extractor from page_read_log").fetchone() == ("readability",)
+
+
+needs_defuddle = pytest.mark.skipif(not __import__("os").path.exists(reader.DEFUDDLE_WORKER),
+                                    reason="defuddle worker is installed in the image only")
+
+
+@needs_defuddle
+def test_defuddle_extractor_on_real_markup():
+    title, text = reader.extract_defuddle(ARTICLE, "https://example.com/a")
+    assert title == "Big article" and "Retrieval augmented generation" in text
+    assert reader.extract_defuddle("", "https://example.com/x") == ("", "")
+    # the worker stays up between pages
+    proc = reader._defuddle.proc
+    reader.extract_defuddle(ARTICLE, "https://example.com/b")
+    assert reader._defuddle.proc is proc and proc.poll() is None
+
+
+@pytest.mark.skipif(__import__("shutil").which("node") is None, reason="needs node")
+def test_defuddle_hung_worker_is_reset(tmp_path, monkeypatch):
+    hang = tmp_path / "hang.mjs"
+    hang.write_text("setInterval(() => {}, 1000);\n")        # reads nothing, answers nothing
+    w = reader._DefuddleWorker(str(hang))
+    monkeypatch.setattr(reader, "DEFUDDLE_TIMEOUT_S", 0.5)
+    assert w.call("<p>x</p>", "https://e.com", True) is None
+    assert w.proc is None                                     # killed, next call starts fresh
+
+
+def test_defuddle_missing_worker_is_a_miss(monkeypatch):
+    monkeypatch.setattr(reader, "_defuddle", reader._DefuddleWorker("/nonexistent/worker.mjs"))
+    assert reader.extract_defuddle(ARTICLE, "https://example.com/a") == ("", "")
+
+
+def test_auto_considers_defuddle(monkeypatch):
+    monkeypatch.setattr(reader, "extract_defuddle", lambda h, u, f="markdown": ("D", LONGER))
+    res, tr, calls = run_read(monkeypatch, "auto", {"trafilatura": ("T", SHORT), "readability": ("R", LONG)})
+    assert tr.extractor == "defuddle" and res.content == LONGER

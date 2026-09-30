@@ -25,11 +25,12 @@ export function saveToken(t: string): void {
 }
 
 /** Page extractors of the adapter's read cascade (simple_tavily_adapter/reader.py). */
-export type Extractor = "auto" | "trafilatura" | "readability";
+export type Extractor = "auto" | "trafilatura" | "readability" | "defuddle";
 export const EXTRACTORS: { id: Extractor; hint: string }[] = [
-  { id: "auto", hint: "Both extractors, the longer text among those the quality gate accepts. Default." },
+  { id: "auto", hint: "All extractors, the longer text among those the quality gate accepts. Default." },
   { id: "trafilatura", hint: "trafilatura only: the most reliable on articles and docs." },
   { id: "readability", hint: "readability (Mozilla Readability port) only: sometimes reads what trafilatura drops, loses more on ordinary pages." },
+  { id: "defuddle", hint: "Defuddle (Obsidian Web Clipper's extractor) only: keeps code blocks, footnotes and math." },
 ];
 
 export interface EngineRow {

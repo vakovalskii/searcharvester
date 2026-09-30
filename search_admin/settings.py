@@ -29,7 +29,7 @@ PROXY_SCHEMES = ("http", "https", "socks5", "socks5h", "socks4")
 ENGINE_LIST_RE = re.compile(r"^[a-z0-9 ._-]{1,60}$")
 CATEGORIES = ("general", "news", "images", "videos", "science", "it", "files", "social", "music", "map")
 MASK = "***"
-EXTRACTORS = ("auto", "trafilatura", "readability")  # simple_tavily_adapter/reader.py
+EXTRACTORS = ("auto", "trafilatura", "readability", "defuddle")  # simple_tavily_adapter/reader.py
 
 
 def empty() -> dict[str, Any]:

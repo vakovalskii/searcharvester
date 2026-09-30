@@ -48,4 +48,4 @@ def reader_proxy(path: Path | None = None) -> str | None:
 
 def extractor(path: Path | None = None) -> str | None:
     v = current(path).get("extractor")
-    return v if v in ("auto", "trafilatura", "readability") else None
+    return v if v in ("auto", "trafilatura", "readability", "defuddle") else None

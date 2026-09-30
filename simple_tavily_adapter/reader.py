@@ -22,9 +22,14 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import atexit
 import logging
+import os
 import re
+import select
 import socket
+import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
@@ -231,8 +236,9 @@ _ANTIBOT_RE = re.compile(
 _MD_LINK_RE = re.compile(r"\[[^\]]*\]\([^)]+\)")
 
 
-EXTRACTORS = ("auto", "trafilatura", "readability")
+EXTRACTORS = ("auto", "trafilatura", "readability", "defuddle")
 DEFAULT_EXTRACTOR = "auto"
+AUTO_EXTRACTORS = ("trafilatura", "readability", "defuddle")
 
 
 def extract(html: str, url: str, return_format: str = "markdown") -> tuple[str, str]:
@@ -270,6 +276,75 @@ def extract_readability(html: str, url: str, return_format: str = "markdown") ->
     return title, text
 
 
+DEFUDDLE_WORKER = os.environ.get("DEFUDDLE_WORKER", "/opt/defuddle/defuddle_worker.mjs")
+DEFUDDLE_TIMEOUT_S = 15.0
+
+
+class _DefuddleWorker:
+    """One long-lived `node defuddle_worker.mjs`, one JSON line each way per page.
+
+    Calls are serialized (a worker handles one page at a time). A timeout, a crash or
+    garbage on stdout kills the process; the next call starts a fresh one.
+    """
+
+    def __init__(self, script: str):
+        self.script = script
+        self.proc: subprocess.Popen | None = None
+        self.lock = threading.Lock()
+        atexit.register(self._kill)
+
+    def _kill(self) -> None:
+        if self.proc is not None:
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=2)
+            except Exception:  # noqa: BLE001
+                pass
+        self.proc = None
+
+    def call(self, html: str, url: str, markdown: bool) -> dict | None:
+        if not os.path.exists(self.script):
+            return None
+        with self.lock:
+            try:
+                if self.proc is None or self.proc.poll() is not None:
+                    self.proc = subprocess.Popen(
+                        ["node", self.script], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL, text=True, bufsize=1)
+                self.proc.stdin.write(json.dumps({"html": html, "url": url, "markdown": markdown}) + "\n")
+                self.proc.stdin.flush()
+                ready, _, _ = select.select([self.proc.stdout], [], [], DEFUDDLE_TIMEOUT_S)
+                line = self.proc.stdout.readline() if ready else ""
+                if not line:
+                    raise TimeoutError("defuddle worker: no answer")
+                return json.loads(line)
+            except Exception as e:  # noqa: BLE001 - a stuck page must not stick the worker
+                logger.warning("defuddle worker reset: %s", e)
+                self._kill()
+                return None
+
+
+_defuddle = _DefuddleWorker(DEFUDDLE_WORKER)
+
+
+def extract_defuddle(html: str, url: str, return_format: str = "markdown") -> tuple[str, str]:
+    """(title, text) by Defuddle (Obsidian Web Clipper's extractor, JS), empty when it fails."""
+    if not html:
+        return "", ""
+    r = _defuddle.call(html, url, return_format == "markdown")
+    if not r or r.get("error"):
+        return "", ""
+    text = r.get("content") or ""
+    if return_format != "markdown":
+        text = _TAG_RE.sub(" ", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return re.sub(r"\s+", " ", r.get("title") or "").strip()[:300], text
+
+
+_EXTRACTOR_FNS = {"trafilatura": "extract", "readability": "extract_readability", "defuddle": "extract_defuddle"}
+
+
 _RANK = {"ok": 2, "judge": 1, "reject": 0}
 _MD_LINK_TARGET_RE = re.compile(r"\[([^\]]*)\]\([^)]+\)")
 
@@ -288,10 +363,10 @@ def extract_best(html: str, url: str, return_format: str, extractor: str):
     (by _reading_len, link targets excluded) wins only among candidates the gate does
     not reject.
     """
-    names = ("trafilatura", "readability") if extractor == "auto" else (extractor,)
+    names = AUTO_EXTRACTORS if extractor == "auto" else (extractor,)
     out = []
     for name in names:
-        fn = extract_readability if name == "readability" else extract
+        fn = globals()[_EXTRACTOR_FNS[name]]   # looked up per call: tests patch the module
         title, text = fn(html, url, return_format)
         if not title:
             m = _TITLE_RE.search(html)
@@ -468,8 +543,9 @@ async def read_page(url: str, settings, *, reader_fn: ReaderFn, browser_fn: Brow
             extractor = getattr(settings, "extractor", "") or DEFAULT_EXTRACTOR
             if extractor not in EXTRACTORS:
                 extractor = DEFAULT_EXTRACTOR
-            name, title, text, sig, decision, reason = extract_best(
-                f.html, f.final_url or url, return_format, extractor)[0]
+            # Off the event loop: trafilatura/readability are CPU, defuddle waits on node.
+            name, title, text, sig, decision, reason = (await asyncio.to_thread(
+                extract_best, f.html, f.final_url or url, return_format, extractor))[0]
             tr.extractor = name
             res.html, res.final_url, res.title = f.html, f.final_url or url, title
             res.any_completed = True

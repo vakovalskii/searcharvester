@@ -37,6 +37,13 @@ RUN cd /opt/hermes && HERMES_HOME=/tmp/tirith-home /opt/hermes/.venv/bin/python 
  && install -m 0755 /tmp/tirith-home/bin/tirith /usr/local/bin/tirith \
  && tirith --version
 
+# Defuddle extractor (JS): node from the base image, the worker talks JSON lines
+# to reader.py. Own dir, not /app: tests bind-mount the source over /app.
+RUN mkdir -p /opt/defuddle && cd /opt/defuddle \
+ && echo '{"type":"module","private":true}' > package.json \
+ && npm install --omit=dev --no-audit --no-fund defuddle@0.19.4 linkedom@0.18.13
+COPY defuddle_worker.mjs /opt/defuddle/defuddle_worker.mjs
+
 RUN mkdir -p /app && chown hermes:hermes /app
 COPY --chown=hermes:hermes . /app/
 

@@ -7,7 +7,7 @@
 One `docker compose up` gives you:
 
 - **`/search`**: Tavily-compatible search via SearXNG (100+ engines), including images and videos
-- **`/extract`**: URL → clean markdown via trafilatura and/or readability, with size presets and pagination
+- **`/extract`**: URL → clean markdown via trafilatura, readability and Defuddle, with size presets and pagination
 - **`/research`**: a deep research agent team. Ask a question, get back a markdown report with citations
 - **Web UI** on `:9762`: start jobs, pick a model per agent role, follow every agent live, read the report, browse sources and media
 - **Search settings** in the same UI: SearXNG engines, proxies and timeouts, applied with a SearXNG restart
@@ -98,12 +98,19 @@ tables and links) and returns markdown. The extractor is picked on the settings 
 
 | Extractor | What it does |
 |---|---|
-| `auto` (default) | runs both below, keeps the text the quality gate rates best, then the longer one |
+| `auto` (default) | runs all below, keeps the text the quality gate rates best, then the longer one |
 | `trafilatura` | [trafilatura](https://github.com/adbar/trafilatura) only, the behaviour before 2026-09-30 |
 | `readability` | [python-readability](https://github.com/buriy/python-readability) (Mozilla Readability port) only |
+| `defuddle` | [Defuddle](https://github.com/kepano/defuddle) (Obsidian Web Clipper's extractor, runs in a node worker) only |
 
-On 87 pages from our read log, `auto` kept every page trafilatura already read and cut hard-page
-rejects from 33 to 26 of 57. Every read logs which extractor won (`extractor` in `page_read_log`).
+On 81 pages from our read log (`auto` runs all three):
+
+| mode | hard pages ok / judge / reject | control ok / judge / reject | ms per page |
+|---|---|---|---|
+| trafilatura | 1 / 19 / 24 | 32 / 5 / 0 | 135 |
+| readability | 1 / 13 / 30 | 25 / 11 / 1 | 149 |
+| defuddle | 10 / 18 / 16 | 25 / 12 / 0 | 495 |
+| auto | 10 / 19 / 15 | 34 / 3 / 0 | sum of three | Every read logs which extractor won (`extractor` in `page_read_log`).
 When the fast path fails the gate, the read goes on to the paid reader and the browser as before.
 
 | Size | Chars | Use case |
@@ -227,7 +234,7 @@ Finished jobs stay on disk (`jobs/`, `state/`) and survive restarts.
 - **Engines**: on/off per engine by category, SearXNG's own error stats, and a **check** button
   that runs one search in the category and shows which engines answered.
 - **Adapter**: default engines per category, a proxy for page reads (`/extract` and pictures) and
-  the page extractor (`auto`, `trafilatura`, `readability`).
+  the page extractor (`auto`, `trafilatura`, `readability`, `defuddle`).
 
 **Apply** validates and saves, renders SearXNG's `settings.yml` and restarts SearXNG only if its part
 changed (2 to 4 s). Adapter settings apply without a restart. The page needs `SEARCH_ADMIN_TOKEN`.
