@@ -24,6 +24,15 @@ export function saveToken(t: string): void {
   }
 }
 
+/** Page extractors of the adapter's read cascade (simple_tavily_adapter/reader.py). */
+export type Extractor = "auto" | "trafilatura" | "readability" | "defuddle";
+export const EXTRACTORS: { id: Extractor; hint: string }[] = [
+  { id: "auto", hint: "All extractors, the longer text among those the quality gate accepts. Default." },
+  { id: "trafilatura", hint: "trafilatura only: the most reliable on articles and docs." },
+  { id: "readability", hint: "readability (Mozilla Readability port) only: sometimes reads what trafilatura drops, loses more on ordinary pages." },
+  { id: "defuddle", hint: "Defuddle (Obsidian Web Clipper's extractor) only: keeps code blocks, footnotes and math." },
+];
+
 export interface EngineRow {
   name: string;
   categories: string[];
@@ -40,7 +49,7 @@ export interface Overrides {
     request_timeout: number | null;
     max_request_timeout: number | null;
   };
-  adapter: { default_engines: Record<string, string[]>; reader_proxy: string | null };
+  adapter: { default_engines: Record<string, string[]>; reader_proxy: string | null; extractor?: Extractor | null };
 }
 
 export interface AdminStatus {

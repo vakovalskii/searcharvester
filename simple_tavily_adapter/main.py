@@ -165,9 +165,10 @@ _ENV_PROXY = _reader_settings.proxy_url
 
 
 def _live_reader_proxy() -> str:
-    """The Settings page's reader proxy over PROXY_URL; applied to the shared
-    settings object the read cascade already holds."""
+    """The Settings page's reader proxy (over PROXY_URL) and extractor; applied to
+    the shared settings object the read cascade already holds."""
     _reader_settings.proxy_url = search_settings.reader_proxy() or _ENV_PROXY
+    _reader_settings.extractor = search_settings.extractor() or reader.DEFAULT_EXTRACTOR
     return _reader_settings.proxy_url
 _reader_fn = read_backends.neuraldeep_reader(_reader_settings)
 _browser_fn = read_backends.playwright_browser(_reader_settings)

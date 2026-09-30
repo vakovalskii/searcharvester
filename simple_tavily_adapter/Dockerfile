@@ -12,6 +12,9 @@ RUN apt-get update \
 RUN uv pip install --no-cache-dir --python /opt/hermes/.venv/bin/python3 \
     "trafilatura>=1.12,<3.0" \
     "lxml>=4.9" \
+    "readability-lxml>=0.8.1,<1.0" \
+    "lxml_html_clean>=0.4" \
+    "markdownify>=0.13,<2.0" \
     "beautifulsoup4==4.12.2" \
     "sse-starlette==2.1.3" \
     "pytest==8.3.3" \
@@ -33,6 +36,13 @@ RUN cd /opt/hermes && HERMES_HOME=/tmp/tirith-home /opt/hermes/.venv/bin/python 
       "from tools.tirith_security import _install_tirith; print(_install_tirith())" \
  && install -m 0755 /tmp/tirith-home/bin/tirith /usr/local/bin/tirith \
  && tirith --version
+
+# Defuddle extractor (JS): node from the base image, the worker talks JSON lines
+# to reader.py. Own dir, not /app: tests bind-mount the source over /app.
+RUN mkdir -p /opt/defuddle && cd /opt/defuddle \
+ && echo '{"type":"module","private":true}' > package.json \
+ && npm install --omit=dev --no-audit --no-fund defuddle@0.19.4 linkedom@0.18.13
+COPY defuddle_worker.mjs /opt/defuddle/defuddle_worker.mjs
 
 RUN mkdir -p /app && chown hermes:hermes /app
 COPY --chown=hermes:hermes . /app/

@@ -95,6 +95,16 @@ def test_store_roundtrip(tmp_path):
     assert yaml.safe_load(store.searxng_path.read_text())["server"]["secret_key"] == "k"
     ov, _ = st.normalize({"adapter": {"default_engines": {"images": ["bing images"]}}}, store.overrides(), NAMES)
     store.save(ov)
-    assert json.loads(store.adapter_path.read_text()) == {"default_engines": {"images": "bing images"}, "reader_proxy": None}
+    assert json.loads(store.adapter_path.read_text()) == {"default_engines": {"images": "bing images"}, "reader_proxy": None, "extractor": None}
     assert store.overrides()["adapter"]["default_engines"] == {"images": ["bing images"]}
     assert oct(store.overrides_path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_extractor_choice_is_validated_and_rendered():
+    ov, errors = st.normalize({"adapter": {"extractor": "readability"}}, st.empty(), NAMES)
+    assert not errors and ov["adapter"]["extractor"] == "readability"
+    assert st.render_adapter(ov)["extractor"] == "readability"
+    ov, errors = st.normalize({"adapter": {"extractor": "boilerpipe"}}, ov, NAMES)
+    assert errors and "extractor" in errors[0] and ov["adapter"]["extractor"] == "readability"
+    ov, errors = st.normalize({"adapter": {"extractor": None}}, ov, NAMES)
+    assert not errors and st.render_adapter(ov)["extractor"] is None

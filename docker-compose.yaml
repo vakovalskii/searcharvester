@@ -125,6 +125,30 @@ services:
         max-size: "1m"
         max-file: "1"
 
+  # Optional exit through Cloudflare WARP (userspace sing-box, no NET_ADMIN).
+  # Off by default: `docker compose --profile warp up -d`, then put
+  # socks5h://warp:9091 into Settings (reader proxy and/or SearXNG proxies).
+  # Some networks (seen on RU home and office lines, 2026-09-30) cut the WARP
+  # registration API or its tunnel; the container then exits, check its log.
+  warp:
+    image: ghcr.io/mon-ius/docker-warp-socks:v7
+    container_name: warp
+    profiles: ["warp"]
+    restart: unless-stopped
+    networks:
+      - searxng
+    healthcheck:
+      test: ["CMD", "curl", "-x", "socks5h://127.0.0.1:9091", "-fsSL", "https://www.cloudflare.com/cdn-cgi/trace"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
   # React + Tailwind + Vite UI over the /research API.
   # Backend of the web Settings page for SearXNG (search_admin/server.py): the
   # only service with the Docker socket, used for one container. It is NOT on the

@@ -34,6 +34,7 @@ class ReaderSettings:
     judge_timeout_s: float
     proxy_url: str
     playwright_url: str
+    extractor: str = "auto"  # reader.EXTRACTORS; the Settings page overrides it live
 
     @classmethod
     def from_env(cls) -> "ReaderSettings":

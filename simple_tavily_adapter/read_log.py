@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS page_read_log (
   ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   source TEXT, caller TEXT, url TEXT, host TEXT, path TEXT,
   fast_status INTEGER, fast_error TEXT, fast_via_proxy INTEGER, fast_chars INTEGER, fast_ms INTEGER,
-  gate_decision TEXT, gate_reason TEXT, signals TEXT,
+  gate_decision TEXT, gate_reason TEXT, extractor TEXT, signals TEXT,
   judge_ok INTEGER, judge_reason TEXT, judge_ms INTEGER,
   reader_called INTEGER, reader_chars INTEGER, reader_ms INTEGER, reader_error TEXT,
   browser_called INTEGER, browser_via_proxy INTEGER, browser_chars INTEGER, browser_ms INTEGER, browser_error TEXT,
@@ -47,6 +47,9 @@ def _path() -> str:
 def init() -> None:
     with _lock, sqlite3.connect(_path()) as db:
         db.executescript(DDL)
+        # logs created before the extractor choice (2026-09-30) lack the column
+        if "extractor" not in {r[1] for r in db.execute("PRAGMA table_info(page_read_log)")}:
+            db.execute("ALTER TABLE page_read_log ADD COLUMN extractor TEXT")
         db.execute(RETENTION)
 
 

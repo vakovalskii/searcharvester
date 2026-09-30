@@ -6,7 +6,8 @@ container cannot rewrite it. Read again whenever its mtime changes; a missing
 or broken file means the built-in defaults.
 
 - default_engines: category -> "engine,engine" used when a caller names none;
-- reader_proxy: egress proxy of /extract and /media, over PROXY_URL.
+- reader_proxy: egress proxy of /extract and /media, over PROXY_URL;
+- extractor: which extractor reads a fetched page (reader.EXTRACTORS).
 """
 from __future__ import annotations
 
@@ -43,3 +44,8 @@ def default_engines(category: str, path: Path | None = None) -> str | None:
 def reader_proxy(path: Path | None = None) -> str | None:
     v = current(path).get("reader_proxy")
     return v if isinstance(v, str) and v.strip() else None
+
+
+def extractor(path: Path | None = None) -> str | None:
+    v = current(path).get("extractor")
+    return v if v in ("auto", "trafilatura", "readability", "defuddle") else None

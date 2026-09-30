@@ -29,12 +29,13 @@ PROXY_SCHEMES = ("http", "https", "socks5", "socks5h", "socks4")
 ENGINE_LIST_RE = re.compile(r"^[a-z0-9 ._-]{1,60}$")
 CATEGORIES = ("general", "news", "images", "videos", "science", "it", "files", "social", "music", "map")
 MASK = "***"
+EXTRACTORS = ("auto", "trafilatura", "readability", "defuddle")  # simple_tavily_adapter/reader.py
 
 
 def empty() -> dict[str, Any]:
     return {
         "searxng": {"engines": {}, "proxies": [], "request_timeout": None, "max_request_timeout": None},
-        "adapter": {"default_engines": {}, "reader_proxy": None},
+        "adapter": {"default_engines": {}, "reader_proxy": None, "extractor": None},
     }
 
 
@@ -176,6 +177,15 @@ def normalize(body: Any, stored: dict[str, Any], engine_names: set[str]) -> tupl
                 out["adapter"]["reader_proxy"] = v
         else:
             errors.append("adapter.reader_proxy must be a URL or empty")
+
+    if "extractor" in ad:
+        v = ad["extractor"]
+        if v in (None, ""):
+            out["adapter"]["extractor"] = None
+        elif v in EXTRACTORS:
+            out["adapter"]["extractor"] = v
+        else:
+            errors.append(f"adapter.extractor must be one of {', '.join(EXTRACTORS)}")
     return out, errors
 
 
@@ -218,7 +228,8 @@ def render_searxng(base: dict[str, Any], ov: dict[str, Any]) -> dict[str, Any]:
 def render_adapter(ov: dict[str, Any]) -> dict[str, Any]:
     ad = ov.get("adapter") or {}
     return {"default_engines": {k: ",".join(v) for k, v in (ad.get("default_engines") or {}).items()},
-            "reader_proxy": ad.get("reader_proxy")}
+            "reader_proxy": ad.get("reader_proxy"),
+            "extractor": ad.get("extractor")}
 
 
 # ---------- files ----------
