@@ -12,7 +12,10 @@ export type JobStatus =
   | "completed"
   | "failed"
   | "timeout"
-  | "cancelled";
+  | "cancelled"
+  | "interrupted";
+
+export type Depth = "quick" | "deep";
 
 export interface ResearchCreated {
   job_id: string;
@@ -23,6 +26,7 @@ export interface JobSnapshot {
   job_id: string;
   status: JobStatus;
   query: string;
+  depth?: string | null;
   started_at: string | null;
   finished_at: string | null;
   duration_sec: number | null;
@@ -41,6 +45,7 @@ export type AgentEventType =
   | "plan"
   | "commands"
   | "note"
+  | "usage"
   | "done";
 
 export interface AgentEvent {
@@ -50,6 +55,18 @@ export interface AgentEvent {
   parent_id: string | null;
   type: AgentEventType;
   payload: Record<string, unknown>;
+  seq: number;
+}
+
+export interface JobListItem {
+  id: string;
+  query: string;
+  depth: string | null;
+  status: JobStatus;
+  created_at: string | null;
+  started_at: string | null;
+  duration_sec: number | null;
+  parent_job?: string | null;
 }
 
 export interface JobTerminalStatus {
@@ -66,11 +83,11 @@ export interface JobTerminalStatus {
  *  it, so a plain HTML form on a foreign site cannot start or cancel a job. */
 export const CLIENT_HEADERS = { "X-Searcharvester-Client": "1" } as const;
 
-export async function createResearch(query: string): Promise<ResearchCreated> {
+export async function createResearch(query: string, depth: Depth = "quick"): Promise<ResearchCreated> {
   const r = await fetch(`${API_URL}/research`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...CLIENT_HEADERS },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, depth }),
   });
   if (!r.ok) {
     throw new Error(`POST /research failed: ${r.status} ${await r.text()}`);
@@ -109,6 +126,12 @@ export async function getSnapshot(
   return r.json();
 }
 
+export async function listJobs(limit = 50): Promise<JobListItem[]> {
+  const r = await fetch(`${API_URL}/research?limit=${limit}`);
+  if (!r.ok) throw new Error(`GET /research: ${r.status}`);
+  return (await r.json()).jobs;
+}
+
 export async function checkHealth(): Promise<{ status: string; orchestrator: string }> {
   const r = await fetch(`${API_URL}/health`);
   if (!r.ok) throw new Error(`GET /health: ${r.status}`);
@@ -124,7 +147,7 @@ export interface SSESubscription {
 const EVENT_TYPES: AgentEventType[] = [
   "spawn", "thought", "message",
   "tool_call", "tool_result",
-  "plan", "commands", "note", "done",
+  "plan", "commands", "note", "usage", "done",
 ];
 
 /**
@@ -136,9 +159,12 @@ export function subscribeToJob(
   jobId: string,
   onEvent: (e: AgentEvent) => void,
   onFinal: (s: JobTerminalStatus) => void,
-  onError?: (e: Event) => void
+  onError?: (e: Event) => void,
+  after = 0
 ): SSESubscription {
-  const es = new EventSource(`${API_URL}/research/${jobId}/events`);
+  // `after` skips what the client already has; on reconnect the browser also
+  // sends Last-Event-ID (the server sends seq as the event id).
+  const es = new EventSource(`${API_URL}/research/${jobId}/events?after=${after}`);
 
   for (const t of EVENT_TYPES) {
     es.addEventListener(t, (ev: MessageEvent) => {

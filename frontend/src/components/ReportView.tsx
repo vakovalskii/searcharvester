@@ -64,7 +64,24 @@ export default function ReportView({ report, onRunAgain }: Props) {
         </div>
       </div>
       <article className="md-body px-6 py-5 overflow-x-auto">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{report}</ReactMarkdown>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          skipHtml
+          components={{
+            // Until /media (stage D) the browser must not fetch images from other sites.
+            img: ({ src, alt }) => (
+              <a href={String(src ?? "")} target="_blank" rel="noopener noreferrer">[image: {alt || src}]</a>
+            ),
+            a: ({ href, children }) =>
+              /^https?:/i.test(String(href ?? "")) ? (
+                <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
+              ) : (
+                <span>{children}</span>
+              ),
+          }}
+        >
+          {report}
+        </ReactMarkdown>
       </article>
     </div>
   );
