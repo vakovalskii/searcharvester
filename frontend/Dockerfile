@@ -11,6 +11,8 @@ COPY src ./src
 # Allow override of the backend URL baked into the bundle.
 ARG VITE_API_URL=http://localhost:8000
 ENV VITE_API_URL=${VITE_API_URL}
+ARG VITE_ADMIN_URL=http://localhost:8011
+ENV VITE_ADMIN_URL=${VITE_ADMIN_URL}
 RUN npm run build
 
 # ---------- Runtime: static files served by a thin node http-server ----------
