@@ -494,8 +494,10 @@ agent:
   # 40 leaves room for that; more only feeds a loop (the flow guard in
   # simple_tavily_adapter/guard.py caps the whole job on top of it).
   max_turns: 40
-  # Tell the agent it is running out of turns at 80% instead of cutting it off.
-  budget_warning_ratio: 0.8
+  # Tell the agent to stop gathering and write at 70% of its turns (the notice
+  # text is ours, see simple_tavily_adapter/docker/patch_hermes.py). Applies to
+  # the lead (turn 28 of 40) and to every sub-agent (turn 25 of 35).
+  budget_warning_ratio: 0.7
 
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
@@ -802,9 +804,11 @@ tool_loop_guardrails:
 # The delegate_task tool spawns child agents with isolated context.
 # Supports single tasks and batch mode (default 3 parallel, configurable).
 delegation:
-  # A researcher does 2-4 searches, 4-6 extracts and a few greps: ~15 turns.
-  # 25 is slack, not a target; the old 50 let a stuck child run for minutes.
-  max_iterations: 25                          # Max tool-calling turns per child (default: 50)
+  # A researcher does 2-4 searches, 4-6 extracts and a few greps: ~15 turns,
+  # but on a hard question it reads 20+ pages. At 25 two of three researchers
+  # ran out before writing (30.09, SGLang vs vLLM). 35 with the budget notice at
+  # 70% (turn 25) leaves ten turns to write; the job guard still caps the total.
+  max_iterations: 35                          # Max tool-calling turns per child (default: 50)
   # Deep-research: up to 5 sub-questions running in parallel.
   max_concurrent_children: 5
   max_spawn_depth: 1                          # Flat — children can't spawn grandchildren.

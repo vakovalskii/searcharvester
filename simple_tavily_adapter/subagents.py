@@ -34,6 +34,15 @@ from typing import Any
 MAX_TEXT = 2000
 
 
+def _goal_key(goal: str) -> str:
+    """The part of a task goal that must appear in the session's first message. The
+    ACP preview cuts goals mid-word and may add an ellipsis: drop both."""
+    g = " ".join(goal.split())[:200].rstrip(".…").rstrip()
+    if len(g) >= 40 and " " in g:
+        g = g.rsplit(" ", 1)[0]   # the last word may be cut ("дл" of "для")
+    return g
+
+
 @dataclass
 class _Task:
     agent_id: str
@@ -54,6 +63,7 @@ class _Session:
     usage: tuple = ()
     ended: bool = False
     first_user: str = ""
+    empty_polls: int = 0             # polls seen before Hermes wrote the task message
 
     @property
     def emit_id(self) -> str:
@@ -65,6 +75,7 @@ class SubagentTail:
     db_path: Path
     lead_session_id: str
     available: bool = True
+    hold_polls: int = 5              # ~10 s at the 2 s tail interval
     _tasks: dict[str, _Task] = field(default_factory=dict)
     _sessions: dict[str, _Session] = field(default_factory=dict)
 
@@ -157,11 +168,19 @@ class SubagentTail:
                 s = self._sessions.get(sid)
                 if s is None:
                     s = self._sessions[sid] = _Session(sid, float(started or 0))
+                # The session row can land before its first user message (the task).
+                # Matching on an empty text would park it under a provisional id for
+                # good, so re-read until it is there and hold its steps meanwhile.
+                if not s.first_user and s.agent_id is None:
                     first = db.execute(
                         "SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id LIMIT 1",
                         (sid,),
                     ).fetchone()
                     s.first_user = (first[0] or "") if first else ""
+                    if not s.first_user and not ended_at:
+                        s.empty_polls += 1
+                        if s.empty_polls < self.hold_polls:
+                            continue
                 if s.agent_id is None:
                     out += self._match(s)
                 out += self._messages(db, s)
@@ -180,7 +199,14 @@ class SubagentTail:
     def _match(self, s: _Session) -> list[tuple[str, str, dict]]:
         text = " ".join(s.first_user.split())
         candidates = [t for t in self._tasks.values()
-                      if t.session is None and t.goal and " ".join(t.goal.split())[:200] in text]
+                      if t.session is None and t.goal and _goal_key(t.goal) in text]
+        if not candidates and text:
+            # One free task and this the only free session with a task text: they
+            # are the same agent, whatever the preview did to the goal.
+            free_tasks = [t for t in self._tasks.values() if t.session is None]
+            free_sessions = [x for x in self._sessions.values() if x.agent_id is None and x.first_user]
+            if len(free_tasks) == 1 and free_sessions == [s]:
+                candidates = free_tasks
         if not candidates:
             if s.provisional is None:
                 s.provisional = f"sub-db-{s.sid[-8:]}"

@@ -332,6 +332,7 @@ class ReadResult:
     html: str = ""            # raw HTML when the fast path fetched it (crawl reuses links)
     final_url: str = ""
     any_completed: bool = False  # some provider answered, even without content
+    not_found: bool = False   # the site itself said the page does not exist (404/410)
 
 
 @dataclass
@@ -388,6 +389,13 @@ async def read_page(url: str, settings, *, reader_fn: ReaderFn, browser_fn: Brow
         tr.fast_status, tr.fast_error = f.status, f.error
         if f.error == "unsafe_url":
             raise UnsafeURL(url)
+        # The origin itself says there is no such page: the reader and the browser
+        # would spend 20 s each to say the same (agents guess raw GitHub paths).
+        # Not for an unresolvable host: our DNS may miss what the reader resolves.
+        if f.status in (404, 410):
+            res.not_found = True
+            tr.fast_ms = int((time.monotonic() - t0) * 1000)
+            return res
         if f.html:
             title, text = extract(f.html, f.final_url or url, return_format)
             res.html, res.final_url, res.title = f.html, f.final_url or url, title

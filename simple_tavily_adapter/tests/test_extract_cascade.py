@@ -49,3 +49,12 @@ def test_extract_nothing_answered_is_neutral_502(client, monkeypatch):
     detail = r.json()["detail"].lower()
     for word in ("neuraldeep", "playwright", "trafilatura", "proxy"):
         assert word not in detail
+
+
+def test_extract_page_the_site_does_not_have_is_404(client, monkeypatch):
+    """30.09: agents guessed raw GitHub paths; a 502 "temporarily unavailable" made
+    them retry the same dead address. A 404 tells them to stop guessing."""
+    monkeypatch.setattr(reader, "read_page", _fake(reader.ReadResult(not_found=True)))
+    r = client.post("/extract", json={"url": "https://example.com/missing"})
+    assert r.status_code == 404
+    assert "search results" in r.json()["detail"]

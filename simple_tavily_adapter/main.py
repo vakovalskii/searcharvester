@@ -244,8 +244,8 @@ def _extract_markdown(html: str) -> tuple[str, str]:
 async def _extract_markdown_for_url(url: str) -> tuple[str, str]:
     """(title, markdown) through the read cascade (reader.py): SSRF-checked fast path
     with a quality gate, then the remote reader and the optional browser.
-    400 for internal or non-http URLs, 422 when a page answered but has no content,
-    502 when nothing could open it. Error texts stay neutral (no backend names)."""
+    400 for internal or non-http URLs, 404 when the site says the page does not exist,
+    422 when a page answered but has no content, 502 when nothing could open it. Error texts stay neutral (no backend names)."""
     try:
         res = await reader.read_page(
             url, _reader_settings, reader_fn=_reader_fn, browser_fn=_browser_fn,
@@ -255,6 +255,8 @@ async def _extract_markdown_for_url(url: str) -> tuple[str, str]:
         raise HTTPException(status_code=400, detail="URL is not allowed (internal or non-http address)")
     if res.content:
         return res.title, res.content
+    if res.not_found:
+        raise HTTPException(status_code=404, detail="Page not found: the site says this address does not exist. Take addresses from search results instead of guessing them.")
     if res.any_completed:
         raise HTTPException(status_code=422, detail="The page has no readable main content")
     raise HTTPException(status_code=502, detail="Page reading is temporarily unavailable")

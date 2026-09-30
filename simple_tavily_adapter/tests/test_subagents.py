@@ -29,7 +29,10 @@ class DB:
     def session(self, sid, goal, *, parent=LEAD, started=1.0):
         self.c.execute("INSERT INTO sessions (id, source, parent_session_id, started_at) VALUES (?,?,?,?)",
                        (sid, "subagent", parent, started))
-        self.msg(sid, "user", goal)
+        if goal is not None:
+            self.msg(sid, "user", goal)
+        else:
+            self.c.commit()
 
     def msg(self, sid, role, content="", tool_calls=None, tool_call_id=None, tool_name=None):
         self.c.execute("INSERT INTO messages (session_id, role, content, tool_calls, tool_name, tool_call_id, timestamp)"
@@ -234,3 +237,45 @@ def test_synthetic_event_adopts_the_earliest_unmatched_session(db):
     assert t.take_synthetic_done("sub-gg-1") is False  # covered: the database closes it
     db.call("s1aaaaaaaa", "c1", "x")
     assert of(t.poll(), "tool_call")[0][0] == "sub-gg-1"
+
+
+def test_task_text_written_after_the_session_row_still_matches(db):
+    """30.09: the session row came before its first user message; the empty text
+    parked researcher 2 under sub-db-* for the whole job and its task stayed empty."""
+    t = tail(db)
+    db.session("s1", None)
+    assert t.poll() == []                       # held, not a provisional agent
+    db.msg("s1", "user", "Researcher 2: AI PDLC\ncontext")
+    db.call("s1", "c1", "python3 search.py --query pdlc")
+    ev = t.poll()
+    assert not of(ev, "spawn") and not of(ev, "note")
+    assert of(ev, "tool_call")[0][0] == "sub-aa-2"
+
+
+def test_hold_gives_up_and_shows_the_session(db):
+    t = tail(db)
+    db.session("s1abcdefgh", None)
+    for _ in range(t.hold_polls - 1):
+        assert t.poll() == []
+    ev = t.poll()
+    assert of(ev, "spawn")[0][0] == "sub-db-abcdefgh"
+
+
+def test_goal_cut_mid_word_by_the_preview_matches(db):
+    t = SubagentTail(db.path, LEAD)
+    t.register_spawn("sub-dd-2", "Researcher 2: Бенчмарки производительности SGLang vs vLLM дл", "call-D", 1)
+    db.session("s1", "Researcher 2: Бенчмарки производительности SGLang vs vLLM для MoE моделей")
+    db.call("s1", "c1", "x")
+    ev = t.poll()
+    assert of(ev, "tool_call")[0][0] == "sub-dd-2" and not of(ev, "spawn")
+
+
+def test_one_free_task_and_one_free_session_are_paired(db):
+    t = SubagentTail(db.path, LEAD)
+    t.register_spawn("sub-ee-1", "Researcher 1: alpha", "call-E", 0)
+    t.register_spawn("sub-ee-2", "Researcher 2: beta", "call-E", 1)
+    db.session("s1", "Researcher 1: alpha")
+    db.session("s2", "a goal the lead rewrote before sending")
+    db.call("s2", "c2", "y")
+    ev = t.poll()
+    assert of(ev, "tool_call", "sub-ee-2") and not of(ev, "spawn")

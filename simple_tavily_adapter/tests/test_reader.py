@@ -403,3 +403,17 @@ def test_fetch_through_proxy_keeps_the_name(monkeypatch):
 ])
 def test_honest_user_agent_for_wikimedia(url, bot):
     assert (reader.user_agent_for(url) == reader.BOT_UA) is bot
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_page_the_origin_does_not_have_skips_reader_and_browser(monkeypatch, status):
+    res, calls, _ = cascade(monkeypatch, fetched=reader.Fetched(status=status),
+                            reader_out={"content": "should not be asked " * 20})
+    assert res.not_found and not res.content
+    assert ("reader",) not in calls and not any(c[0] == "browser" for c in calls)
+
+
+def test_other_4xx_still_tries_the_cascade(monkeypatch):
+    res, calls, _ = cascade(monkeypatch, fetched=reader.Fetched(status=403),
+                            reader_out={"content": "article text " * 20})
+    assert res.path == "reader" and not res.not_found

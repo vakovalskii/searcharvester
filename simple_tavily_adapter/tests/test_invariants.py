@@ -207,7 +207,11 @@ def test_hermes_loop_guard_hard_stops_are_on_in_the_form_hermes_reads(cfg):
 @needs_config
 def test_turn_budgets_and_team_size(cfg):
     assert cfg["agent"]["max_turns"] <= 60
-    assert cfg["delegation"]["max_iterations"] <= 30
+    assert cfg["delegation"]["max_iterations"] <= 40
+    # the wrap-up notice must leave a sub-agent room to write its findings: at
+    # 25 turns with the notice at 80% two of three researchers ran dry (30.09)
+    left = cfg["delegation"]["max_iterations"] * (1 - cfg["agent"]["budget_warning_ratio"])
+    assert left >= 8
     assert cfg["delegation"]["max_spawn_depth"] == 1
     # the deep-research skill spawns up to 3 researchers + critic + fact-checker
     assert cfg["delegation"]["oneshot_max_children"] >= 5
