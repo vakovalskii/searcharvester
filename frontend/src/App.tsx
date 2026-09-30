@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Github, Square, Timer } from "lucide-react";
+import { Activity, Github, Settings, Square, Timer } from "lucide-react";
 import ResearchForm from "./components/ResearchForm";
 import ReportView from "./components/ReportView";
 import JobList from "./components/JobList";
@@ -9,6 +9,7 @@ import BudgetBars from "./components/BudgetBars";
 import SourcesPanel from "./components/SourcesPanel";
 import BranchView from "./components/BranchView";
 import MediaPanel from "./components/MediaPanel";
+import SettingsPage from "./components/SettingsPage";
 import {
   API_URL,
   Depth,
@@ -50,6 +51,8 @@ function hashJob(): string | null {
   return id && /^[0-9a-f]{16}$/.test(id) ? id : null;
 }
 
+const isSettingsHash = () => window.location.hash === "#settings";
+
 function useClock(running: boolean, startedAt: string | null, durationSec: number | null): string {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -67,6 +70,7 @@ export default function App() {
   const [jobs, setJobs] = useState<JobListItem[]>([]);
   const [store, setStore] = useState<Store>(new Map());
   const [activeId, setActiveId] = useState<string | null>(hashJob());
+  const [settings, setSettings] = useState(isSettingsHash());
   const [selectedAgent, setSelectedAgent] = useState("lead");
   type Tab = "report" | "branches" | "graph" | "sources" | "media";
   const [tabChoice, setTab] = useState<Tab | null>(null); // null: pick by what the job has
@@ -88,7 +92,7 @@ export default function App() {
   }, [refreshJobs]);
 
   useEffect(() => {
-    const onHash = () => setActiveId(hashJob());
+    const onHash = () => { setActiveId(hashJob()); setSettings(isSettingsHash()); };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
@@ -97,6 +101,7 @@ export default function App() {
     if (id) window.location.hash = `job=${id}`;
     else history.replaceState(null, "", window.location.pathname);
     setActiveId(id);
+    setSettings(false);
     setSelectedAgent("lead");
     setFocus(null);
     setTab(null);
@@ -213,6 +218,8 @@ export default function App() {
               <Activity size={12} className={healthy === "ok" ? "animate-pulse" : ""} />
               {healthy === "ok" ? "API connected" : healthy === "degraded" ? "orchestrator offline" : "API down"}
             </div>
+            <a href="#settings" className={`${settings ? "text-slate-100" : "text-slate-500"} hover:text-slate-300`}
+               aria-label="Search settings" title="Search settings"><Settings size={16} /></a>
             <a href="https://github.com/vakovalskii/searcharvester" target="_blank" rel="noreferrer"
                className="text-slate-500 hover:text-slate-300" aria-label="GitHub"><Github size={16} /></a>
           </div>
@@ -224,7 +231,12 @@ export default function App() {
           <JobList jobs={jobs} activeId={activeId} onOpen={(j) => open(j.id)} onNew={() => open(null)} />
         </div>
 
-        <main className="min-h-0 overflow-y-auto p-4 space-y-4">
+        {settings && (
+          <main className="min-h-0 overflow-y-auto p-4 lg:col-span-2">
+            <SettingsPage />
+          </main>
+        )}
+        <main className={`min-h-0 overflow-y-auto p-4 space-y-4 ${settings ? "hidden" : ""}`}>
           {!activeId && (
             <div className="max-w-2xl mx-auto pt-10">
               <ResearchForm onSubmit={onSubmit} disabled={healthy === "down"} />
@@ -332,7 +344,7 @@ export default function App() {
           )}
         </main>
 
-        <div className="border-t lg:border-t-0 lg:border-l border-base-800 min-h-[420px] lg:min-h-0">
+        <div className={`border-t lg:border-t-0 lg:border-l border-base-800 min-h-[420px] lg:min-h-0 ${settings ? "hidden" : ""}`}>
           {activeId && lastSeq(record) > 0
             ? <AgentChat view={view} selected={selectedAgent} onSelect={setSelectedAgent} />
             : <div className="p-4 text-sm text-slate-500">Agent chats appear here once a job runs.</div>}

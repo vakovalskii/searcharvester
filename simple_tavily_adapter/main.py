@@ -39,6 +39,7 @@ import read_backends
 import read_log
 import roles
 import media
+import search_settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -160,6 +161,14 @@ MEDIA_CATEGORIES = {"images", "videos"}
 # ---------- Read cascade ----------
 
 _reader_settings = read_backends.ReaderSettings.from_env()
+_ENV_PROXY = _reader_settings.proxy_url
+
+
+def _live_reader_proxy() -> str:
+    """The Settings page's reader proxy over PROXY_URL; applied to the shared
+    settings object the read cascade already holds."""
+    _reader_settings.proxy_url = search_settings.reader_proxy() or _ENV_PROXY
+    return _reader_settings.proxy_url
 _reader_fn = read_backends.neuraldeep_reader(_reader_settings)
 _browser_fn = read_backends.playwright_browser(_reader_settings)
 
@@ -252,6 +261,7 @@ async def _extract_markdown_for_url(url: str) -> tuple[str, str]:
     with a quality gate, then the remote reader and the optional browser.
     400 for internal or non-http URLs, 404 when the site says the page does not exist,
     422 when a page answered but has no content, 502 when nothing could open it. Error texts stay neutral (no backend names)."""
+    _live_reader_proxy()
     try:
         res = await reader.read_page(
             url, _reader_settings, reader_fn=_reader_fn, browser_fn=_browser_fn,
@@ -317,6 +327,7 @@ def _build_extract_response(
 async def _fetch_raw_content(url: str) -> str | None:
     """raw_content for /search results: the read cascade's free fast path only
     (SSRF-checked, quality gate), no paid reader per search result."""
+    _live_reader_proxy()
     try:
         res = await reader.read_page(
             url, _reader_settings, reader_fn=_free_only, browser_fn=_free_only,
@@ -378,10 +389,13 @@ async def search(
         "language": "auto",
         "safesearch": 1,
     }
-    # Web engines return pages, not pictures: images and videos keep SearXNG's
-    # own engines of the category unless the caller names some.
-    if request.engines or category not in MEDIA_CATEGORIES:
-        searxng_params["engines"] = request.engines or "google,duckduckgo,brave"
+    # The caller's engines, else the Settings page's for this category, else ours:
+    # web engines for general; images and videos keep SearXNG's own engines of the
+    # category (web engines return pages, not pictures).
+    engines = request.engines or search_settings.default_engines(category) or (
+        None if category in MEDIA_CATEGORIES else "google,duckduckgo,brave")
+    if engines:
+        searxng_params["engines"] = engines
 
     headers = {
         "X-Forwarded-For": "127.0.0.1",
@@ -805,7 +819,7 @@ async def media_get(job: constr(pattern=JOB_ID_RE), src: constr(min_length=8, ma
     hit = await asyncio.to_thread(media_ledger.cached, job, src)
     if hit:
         return FileResponse(hit[0], media_type=hit[1], headers=_MEDIA_HEADERS)
-    proxy = _reader_settings.proxy_url or None
+    proxy = _live_reader_proxy() or None
     try:
         img = await media.fetch_image(src)
     except media.MediaError as e:

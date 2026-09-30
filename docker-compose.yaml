@@ -18,18 +18,26 @@ services:
     container_name: searxng
     image: docker.io/searxng/searxng:latest
     restart: unless-stopped
-    networks:
-      - searxng
     ports:
       # Local only: SearXNG runs with limiter off, so a public port is an open
       # search proxy for anyone. Put a reverse proxy with auth in front if needed.
       - "127.0.0.1:8999:8080"
+    networks:
+      - searxng
+      - admin
     volumes:
-      - ./config.yaml:/etc/searxng/settings.yml:ro
+      # Settings rendered by search-admin from config.yaml plus what the web
+      # Settings page changed. A directory, not a file: a rewritten file gets a
+      # new inode that a single-file bind mount would never see.
+      - ./search-settings/searxng:/etc/searxng-rendered:ro
       - searxng-data:/var/cache/searxng:rw
     environment:
       - SEARXNG_BASE_URL=http://localhost:8999/
       - BIND_ADDRESS=[::]:8080
+      - SEARXNG_SETTINGS_PATH=/etc/searxng-rendered/settings.yml
+    depends_on:
+      search-admin:
+        condition: service_healthy
     logging:
       driver: "json-file"
       options:
@@ -62,6 +70,9 @@ services:
       # HERMES_HOME — config.yaml, SOUL.md, skills. Bundled skills get
       # synced on boot; our 3 custom skills ship alongside in skills/.
       - ./hermes-data:/opt/data:rw
+      # Settings page values the adapter applies live (search_settings.py);
+      # read-only, so the agents in this container cannot rewrite them.
+      - ./search-settings/adapter:/srv/search-settings:ro
       # Source of truth for our skills; synced into /opt/data/skills on boot.
       - ./hermes_skills:/opt/searcharvester-skills:ro
     environment:
@@ -115,11 +126,39 @@ services:
         max-file: "1"
 
   # React + Tailwind + Vite UI over the /research API.
+  # Backend of the web Settings page for SearXNG (search_admin/server.py): the
+  # only service with the Docker socket, used for one container. It is NOT on the
+  # adapter's network and every call needs SEARCH_ADMIN_TOKEN (random per start
+  # and printed to its log when unset), so a research agent cannot reach it.
+  search-admin:
+    build: ./search_admin
+    container_name: search-admin
+    restart: unless-stopped
+    networks:
+      - admin
+    ports:
+      - "127.0.0.1:${SEARCH_ADMIN_PORT:-8011}:8011"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config.yaml:/srv/base/config.yaml:ro
+      - ./search-settings:/srv/search-settings:rw
+    environment:
+      - SEARCH_ADMIN_TOKEN=${SEARCH_ADMIN_TOKEN:-}
+      - SEARXNG_CONTAINER=searxng
+      - SEARXNG_URL=http://searxng:8080
+      - ALLOWED_ORIGINS=http://localhost:9762,http://127.0.0.1:9762
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
   frontend:
     build:
       context: ./frontend
       args:
         VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+        VITE_ADMIN_URL: ${VITE_ADMIN_URL:-http://localhost:8011}
     container_name: searcharvester-frontend
     restart: unless-stopped
     ports:
@@ -134,6 +173,8 @@ services:
 
 networks:
   searxng:
+  # search-admin and SearXNG only: the adapter (and its agents) is not on it.
+  admin:
 
 volumes:
   valkey-data2:

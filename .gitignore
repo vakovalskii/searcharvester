@@ -1,5 +1,7 @@
 # Конфигурационные файлы с чувствительными данными
 config.yaml
+# Rendered by search-admin: SearXNG settings (with the secret key), proxies
+search-settings/
 
 # SearXNG данные
 searxng-data/
