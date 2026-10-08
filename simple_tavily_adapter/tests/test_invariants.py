@@ -77,6 +77,15 @@ def test_happy_path_completes_with_report_and_guard_stats(tmp_path, monkeypatch)
     assert "guard" in done_payload(job)
 
 
+def test_job_json_on_disk_carries_final_timing(tmp_path, monkeypatch):
+    """07.10: job.json kept finished_at/duration_sec null on completed jobs;
+    _notify() wrote meta before the finally block set the fields."""
+    job, _ = run_job(tmp_path, monkeypatch, "report")
+    meta = json.loads((tmp_path / "jobs" / job.id / "job.json").read_text())
+    assert meta["status"] == "completed"
+    assert meta["finished_at"] and meta["duration_sec"] is not None
+
+
 def test_one_acp_line_of_megabytes_does_not_kill_the_job(tmp_path, monkeypatch):
     """29.09: 'Separator is found, but chunk is longer than limit' on the final write."""
     job, _ = run_job(tmp_path, monkeypatch, "huge_line")

@@ -584,6 +584,10 @@ class Orchestrator:
             job.finished_at = datetime.now(timezone.utc)
             if job.started_at:
                 job.duration_sec = (job.finished_at - job.started_at).total_seconds()
+            # _notify() wrote job.json before these two fields existed, so the
+            # on-disk meta would keep them null forever. Rewrite it once more
+            # with the final timing.
+            self._write_meta(job)
 
     async def _watch_subagents(self, job: Job) -> None:
         while True:
