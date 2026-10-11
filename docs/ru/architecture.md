@@ -192,7 +192,7 @@ sequenceDiagram
 - `adapter.scraper.max_content_length` → размер `raw_content`
 - `adapter.scraper.user_agent` → User-Agent при скрапинге
 
-**Не читаются кодом (захардкожено)**: `adapter.search.default_engines`, `default_categories`, `default_language`, `safesearch`, `default_max_results`. Они есть в `config_loader.py` как property, но не применяются в `main.py`. Это известная шероховатость — см. [`../CLAUDE.md`](../CLAUDE.md).
+**Не читаются кодом (захардкожено)**: `adapter.search.default_engines`, `default_categories`, `default_language`, `safesearch`, `default_max_results`. Они есть в `config_loader.py` как property, но не применяются в `main.py`. Это известная шероховатость — см. [`../../AGENTS.md`](../../AGENTS.md).
 
 ---
 

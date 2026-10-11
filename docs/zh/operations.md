@@ -81,7 +81,7 @@ INFO:main:Search completed: 3 results in 1.42s
 
 `/extract` 的内存缓存位于 `tavily-adapter` 进程内，在进程重启或 30 分钟空闲后都会失效。执行 `docker compose restart tavily-adapter` 后，旧的 `id` 全部失效 — 客户端必须重新 `POST /extract`。这是预期行为。
 
-如果这成为问题 — 参考 CLAUDE.md，持久化缓存方案（SQLite / Redis）出于简洁考虑有意未实现。
+如果这成为问题 — 参考 AGENTS.md，持久化缓存方案（SQLite / Redis）出于简洁考虑有意未实现。
 
 ### 被 Google "Forbidden" / 验证码
 

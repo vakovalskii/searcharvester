@@ -192,7 +192,7 @@ sequenceDiagram
 - `adapter.scraper.max_content_length` → `raw_content` length limit
 - `adapter.scraper.user_agent` → User-Agent for scraping
 
-**Not read by the code (hardcoded)**: `adapter.search.default_engines`, `default_categories`, `default_language`, `safesearch`, `default_max_results`. They exist as properties in `config_loader.py` but aren't applied in `main.py`. Known wart — see [`../../CLAUDE.md`](../../CLAUDE.md).
+**Not read by the code (hardcoded)**: `adapter.search.default_engines`, `default_categories`, `default_language`, `safesearch`, `default_max_results`. They exist as properties in `config_loader.py` but aren't applied in `main.py`. Known wart — see [`../../AGENTS.md`](../../AGENTS.md).
 
 ---
 

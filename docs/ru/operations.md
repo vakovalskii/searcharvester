@@ -81,7 +81,7 @@ INFO:main:Search completed: 3 results in 1.42s
 
 In-memory кеш `/extract` живёт в процессе `tavily-adapter` и сбрасывается при его рестарте или после 30 минут простоя. После `docker compose restart tavily-adapter` все старые `id` инвалидны — клиент должен повторить `POST /extract`. Это ожидаемое поведение.
 
-Если это мешает — см. CLAUDE.md, вариант с персистентным кешем (SQLite / Redis) не реализован сознательно ради простоты.
+Если это мешает — см. AGENTS.md, вариант с персистентным кешем (SQLite / Redis) не реализован сознательно ради простоты.
 
 ### «Forbidden» / капча от Google
 

@@ -13,7 +13,7 @@
 Корневые файлы репозитория:
 
 - [`../../README.md`](../../README.md) — быстрый старт (English)
-- [`../../CLAUDE.md`](../../CLAUDE.md) — заметки для AI-ассистента
+- [`../../AGENTS.md`](../../AGENTS.md) — заметки для AI-ассистента
 - [`../../CONFIG_SETUP.md`](../../CONFIG_SETUP.md) — подробно про `config.yaml`
 
 Другие языки: [English](../en/README.md) · [中文](../zh/README.md)

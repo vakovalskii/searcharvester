@@ -9,20 +9,45 @@ Returns a compact JSON pointer:
       "url": "https://...",
       "title": "...",
       "total_chars": 18532,
+      "pages_fetched": 1,
       "path": "./extracts/abc123.md",
-      "preview": "first 800 chars of markdown..."
+      "preview": "first 800 chars of markdown...",
+      "hint": "how to read the saved file..."
     }
 
 Read specific sections later with standard shell tools:
     cat ./extracts/abc123.md | grep -A5 -i "record"
     head -200 ./extracts/abc123.md
     sed -n '500,800p' ./extracts/abc123.md
+
+With --query "<sub-question>" the saved file is additionally split into
+structure-aware chunks (headings / paragraphs / code / tables) and BM25-
+ranked against the query; the JSON gains:
+
+    "fragments": [
+      {"rank": 1, "score": 9.2, "chunk": 4, "heading_path": ["Doc", "API"],
+       "lines": [120, 163], "chars": 2100, "oversize": false,
+       "text": "...",
+       "neighbors": [{"chunk": 3, "lines": [95, 119]},
+                     {"chunk": 5, "lines": [164, 190]}]}
+    ],
+    "fragments_total": 17,
+    "zero_match": false
+
+If the fragment layer itself fails, the pointer is still returned plus a
+"fragments_error" string instead of the fragments fields.
+
+Escalation is free: neighboring chunk ids, `sed -n 'a,bp' <path>` line
+ranges, or the full file already on disk. fragments.py next to this script
+re-ranks a saved file under a different query without re-fetching:
+
+    python3 fragments.py --file ./extracts/abc123.md --query "other angle"
 """
 import argparse
 import hashlib
 import json
-import math
 import os
+import re
 import sys
 import urllib.request
 import urllib.error
@@ -107,6 +132,14 @@ def main() -> int:
     # Kept for back-compat with older prompts; ignored — we always save full.
     p.add_argument("--size", default=None, help="(ignored) size is always 'full'")
     p.add_argument(
+        "--query", default=None,
+        help="rank saved-page fragments against this sub-question (BM25)",
+    )
+    p.add_argument(
+        "--fragments", type=int, default=3,
+        help="how many top fragments to return with --query (default 3)",
+    )
+    p.add_argument(
         "--base-url",
         default=os.environ.get("SEARCHARVESTER_URL", "http://tavily-adapter:8000"),
     )
@@ -137,11 +170,16 @@ def main() -> int:
         print(json.dumps({"url": args.url, "notice": meta["notice"]}, ensure_ascii=False, indent=2))
         return 0
 
-    extract_id = meta["id"] or _extract_id(args.url)
+    extract_id = meta["id"]
+    # Trust boundary: the server id becomes a filename and is echoed inside
+    # a shell hint the agent copies. Only accept our own md5 shape; anything
+    # else falls back to the locally derived id.
+    if not extract_id or not re.fullmatch(r"[0-9a-f]{16}", str(extract_id)):
+        extract_id = _extract_id(args.url)
     path = _save_extract(full, extract_id)
     preview = full[:PREVIEW_CHARS]
 
-    print(json.dumps({
+    out = {
         "id": extract_id,
         "url": meta["url"],
         "title": meta["title"],
@@ -154,7 +192,35 @@ def main() -> int:
             f"`grep -ni 'keyword' {path}`, `head -200 {path}`, or "
             f"`sed -n '1,300p' {path}`."
         ),
-    }, ensure_ascii=False, indent=2))
+    }
+
+    if args.query:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import fragments
+            out.update(fragments.fragments_payload(
+                full, path, args.query, top_k=max(1, args.fragments)))
+        except Exception as e:
+            # Fragment mode must never eat the fulfilled primary contract:
+            # the page is fetched and saved already, degrade to the pointer.
+            out["fragments_error"] = f"{type(e).__name__}: {e}"
+        if out.get("zero_match"):
+            out["hint"] += (
+                " No fragment matched the query; grep/sed a span of the "
+                "saved file or rephrase --query.")
+        elif out.get("fragments"):
+            frags = out["fragments"]
+            sed = ";".join(
+                f"{f['lines'][0]},{f['lines'][1]}p" for f in frags)
+            neigh = [[f"{n['chunk']}:{n['lines'][0]}-{n['lines'][1]}"
+                      for n in f["neighbors"]] for f in frags]
+            out["hint"] += (
+                f" Fragments are ranked chunks of {path}. Escalate: neighbor "
+                f"chunks {neigh} (their `lines` are in the same file) or "
+                f"context lines via `sed -n '{sed}' {path}`; the full file "
+                f"stays on disk.")
+
+    print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
 

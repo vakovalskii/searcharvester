@@ -82,7 +82,7 @@ When something goes wrong:
 
 The `/extract` in-memory cache lives in the `tavily-adapter` process and is wiped on restart or after 30 minutes of inactivity. After `docker compose restart tavily-adapter` all old `id`s are invalid — the client must repeat `POST /extract`. This is expected.
 
-If this bothers you — see CLAUDE.md. A persistent cache (SQLite / Redis) is intentionally not implemented to keep things simple.
+If this bothers you — see AGENTS.md. A persistent cache (SQLite / Redis) is intentionally not implemented to keep things simple.
 
 ### "Forbidden" / CAPTCHA from Google
 

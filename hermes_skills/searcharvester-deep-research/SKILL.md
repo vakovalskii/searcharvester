@@ -2,10 +2,10 @@
 name: searcharvester-deep-research
 description: >
   Deep-research methodology with a ROLE-BASED team of parallel sub-agents.
-  One `delegate_task` batch dispatches 2–3 researchers (each on a distinct
-  sub-question), 1 critic (adversarial counter-search), and 1 fact-checker
-  (numeric/date verification). The lead synthesises their findings into a
-  cited report at ./report.md. Use for "research", "deep research", "report
+  Two `delegate_task` rounds, at most 3 sub-agents in a round: round 1 is
+  2–3 researchers (each on a distinct sub-question); round 2 is 1 critic
+  and 1 fact-checker. The lead writes ./report.md from those returns and
+  does not re-read extracts. Use for "research", "deep research", "report
   with sources", comparisons with citations, anything needing grounded
   multi-source evidence.
 version: 2.3.0
@@ -36,8 +36,9 @@ You are the **lead researcher / editor**. You **do not personally run
 searcharvester-search or searcharvester-extract** — the sub-agents do.
 Your job:
 1. Decompose the user query into 2–3 concrete sub-questions.
-2. Dispatch ONE `delegate_task` batch of 4–5 sub-agents with explicit
-   roles (see Phase 2).
+2. Dispatch the team in two `delegate_task` rounds, at most 3 sub-agents
+   in a round (see Phase 2). A single batch of 4–5 exceeds the host's
+   3-concurrent chat cap.
 3. Collect their findings, reconcile disagreements, write `./report.md`.
 
 ## When to use
@@ -157,8 +158,9 @@ delegate_task(
 ```
 
 The critic now has concrete claims to challenge. The fact-checker has
-the exact numbers to verify. They can `cat ./extracts/<id>.md` to
-re-read the same extracts the researchers pulled (shared workspace).
+the exact numbers to verify. They use the round 1 return. They do not
+`cat` or `read_file` a whole `./extracts/*.md`: one full extract plus a
+compression cooldown sends the next request over the provider input cap.
 
 Exactly two rounds. Do not fire a third. If a claim still looks
 shaky after round 2, surface it in the report's "Disagreements"
@@ -187,10 +189,13 @@ scripts as shell commands — they are not registered as tools:
 
   # Extract — saves FULL markdown to ./extracts/<id>.md and returns a
   # pointer (id, url, total_chars, path, 800-char preview).
-  # There is no --size any more; every extract is saved in full so
-  # you can read specific sections with shell tools.
+  # Always pass your sub-question as --query: you get the top BM25-ranked
+  # fragments (~300-600 tokens each) with heading paths and line ranges,
+  # so the relevant section comes back in the same call. Escalate via the
+  # neighbors' own `lines` ranges or the sed ranges in the hint, or grep
+  # the saved file.
   python3 /opt/data/skills/searcharvester-extract/scripts/extract.py \
-    --url "<url>"
+    --url "<url>" --query "<SUBQ>"
 
   # Then read the saved file precisely — no truncation:
   grep -ni 'keyword' ./extracts/<id>.md
@@ -199,15 +204,21 @@ scripts as shell commands — they are not registered as tools:
 
 HARD RULE: Your FIRST action must be a `terminal` call with search.py.
 Never answer from your training memory — your data is older than today.
+Do not `read_file` or `cat` a whole `./extracts/*.md`. Use `grep` or a
+short `sed` span. If compression is blocked or the same read repeats,
+stop and return the findings you already have.
 
 METHOD:
 1. Run 2–4 search.py invocations with varied phrasings.
 2. Pick 4–6 authoritative URLs from the combined results.
-3. Run extract.py on each — this saves the FULL page to
-   `./extracts/<id>.md`. If HTTP 422/502/500, try another URL.
-4. Use `grep -ni` / `head` / `sed` on the saved files to find the
-   specific quote you want to cite. The preview in extract.py's
-   output is only 800 chars — the file has the rest.
+3. Run extract.py on each with `--query "<your sub-question>"` — this
+   saves the FULL page to `./extracts/<id>.md` AND returns the ranked
+   fragments. If HTTP 422/502/500, try another URL.
+4. Start from the returned fragments[]. If a fragment is not enough,
+   escalate: each neighbor in `neighbors` carries its own `lines`
+   range — `sed -n 'a,bp'` it, or `grep -ni` the saved file. The
+   preview in extract.py's output is only 800 chars — the file has
+   the rest.
 5. Target: 4–6 successful extracts, each actually read (not just
    fetched — if you never grep or head it, you don't know what's
    really in there).
@@ -255,9 +266,11 @@ question in the abstract):
 <RESEARCHER_SUMMARY>
 
 TOOLS: Same as researcher — terminal + searcharvester-search/extract
-scripts (extract saves to `./extracts/<id>.md`; use grep/head to read
-specific sections). You can ALSO `cat ./extracts/<id>.md` to re-read
-any extract the researchers already pulled — the workspace is shared.
+scripts (extract saves to `./extracts/<id>.md`). To re-check a researcher's
+page, use `grep -ni` / short `sed` spans on the saved file, or re-rank it
+with `fragments.py --file ./extracts/<id>.md --query "<claim>"`. Do not
+`cat` or `read_file` a whole extract — the workspace is shared and so is
+the context budget.
 
 HARD RULE: Your FIRST action is a search.py call targeting a
 SPECIFIC researcher claim. For each claim in <RESEARCHER_SUMMARY>,
@@ -348,9 +361,17 @@ IF ANY FACT IS CONFIRMED BY ONLY ONE DOMAIN, MARK IT "[tentative — single sour
 
 ### Phase 3 — Synthesise (lead)
 
-When `delegate_task` returns:
+Round 1 is not the report. After it returns, write the short researcher
+summary and run round 2. After round 2 returns, that tool result plus the
+round 1 result are the research, and the next tool call is `write_file`
+of `./report.md`. Do not `read_file` `extracts/`,
+`/opt/data/cache/delegation/`, or a spillover path. Those files are larger
+than the compression tail: one read is dropped, the next read is identical,
+and the read guardrail ends the turn before `report.md` exists. If a child
+hit its iteration budget or returned "(empty)", write from the partial
+return and say so under Caveats.
 
-1. Read each sub-agent's markdown block. Expect:
+1. Use each sub-agent's markdown block inside that tool result. Expect:
    - Researcher 1..N → `### Findings` bullets with URLs
    - Critic → `### Counter-evidence` + `### Verdict`
    - Fact-checker → `### Fact verification` + `### Summary`
@@ -439,9 +460,10 @@ REPORT_SAVED: ./report.md
 - **Researchers overlap.** Each researcher should own a distinct
   sub-question — if two researchers end up citing the same URL, you
   sliced the question wrong.
-- **Multiple delegate_task calls.** Use the `tasks=[...]` batch form
-  once. Calling `delegate_task(goal=...)` N times serialises the team
-  and destroys the parallelism.
+- **A five-wide batch.** Two rounds, at most 3 tasks in one
+  `delegate_task`. One batch of 4–5 exceeds the 3-concurrent chat cap.
+  Calling `delegate_task(goal=...)` once per agent serialises the team.
+  A second batched round is still required.
 - **Accepting Hermes "(empty)" summaries silently.** If a sub-agent
   returns "(empty)" (model no-op), note it in the report's Caveats
   and do NOT pretend the research is complete.
@@ -450,3 +472,7 @@ REPORT_SAVED: ./report.md
   is unusable.
 - **Sub-agent writing from memory.** If a sub-agent's output has no
   URLs, it did not actually call extract.py — reject / note it.
+- **Re-reading saved pages after round 2.** The lead writes
+  `./report.md` from the two `delegate_task` results. A `read_file` of
+  an extract trips the read guardrail and the job ends with no
+  `report.md`.

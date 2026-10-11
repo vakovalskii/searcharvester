@@ -75,6 +75,11 @@ services:
       - ./search-settings/adapter:/srv/search-settings:ro
       # Source of truth for our skills; synced into /opt/data/skills on boot.
       - ./hermes_skills:/opt/searcharvester-skills:ro
+    env_file:
+      # Secrets and host tunables, gitignored. Missing file is not fatal for
+      # compose, but every LLM call then fails on the first job.
+      - path: .env.hermes
+        required: false
     environment:
       - JOBS_DIR=/srv/searxng-docker/jobs
       # Adapter-owned job state (job.json, events.jsonl, final report): outlives
@@ -91,26 +96,23 @@ services:
       - HERMES_API_CALL_STALE_TIMEOUT=${HERMES_API_CALL_STALE_TIMEOUT:-600}
       - GUARD_STALL_S=${GUARD_STALL_S:-900}
       - GUARD_WRAPUP_S=${GUARD_WRAPUP_S:-600}
-      # Hermes processes at once; the rest wait as "queued". ~200 MB each at
-      # start: 16 fits a 6 GB Docker VM, raise it on a real server.
-      - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-16}
       # Match the UID of the repo owner so mounted files stay owned by
       # the right user. macOS: 501:20 is typical; override in .env if needed.
       - HERMES_UID=${HERMES_UID:-501}
       - HERMES_GID=${HERMES_GID:-20}
-      # LLM credentials — pass-through from the invoking shell / .env.
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      # Read cascade (/extract): neuraldeep reader and the gate's LLM judge.
-      # Without a key /extract is fast path only (see read_backends.py).
-      - NEURALDEEP_API_KEY=${NEURALDEEP_API_KEY:-}
+      # Supplied by .env.hermes (env_file above), NOT listed here on
+      # purpose: a `- VAR` entry with no shell value resolves to unset and
+      # overrides the env_file value, and ${VAR:-...} interpolates before
+      # env_file loads, so either form would shadow the file.
+      #   LLM credentials: OPENAI_API_KEY, OPENAI_BASE_URL,
+      #     OPENROUTER_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY,
+      #     NEURALDEEP_API_KEY (without it /extract is fast path only,
+      #     see read_backends.py), PROXY_URL, PLAYWRIGHT_URL.
+      #   Host tunables: MAX_CONCURRENT_JOBS (adapter default 1) and
+      #     GUARD_MAX_INPUT_TOKENS (default 3_000_000 in guard.py; the
+      #     free nemotron route burns ~3.5M on a deep run).
       - NEURALDEEP_BASE_URL=${NEURALDEEP_BASE_URL:-https://api.neuraldeep.ru}
       - JUDGE_LLM_MODEL=${JUDGE_LLM_MODEL:-qwen3.6-35b-a3b-noreason}
-      - PROXY_URL=${PROXY_URL:-}
-      - PLAYWRIGHT_URL=${PLAYWRIGHT_URL:-}
       - READ_LOG_DB=/srv/searxng-docker/jobs/page_read_log.sqlite3
     depends_on:
       - searxng

@@ -67,6 +67,9 @@ frontend/package-lock.json
 .playwright-mcp/
 acp-*.png
 
+# deliver-spec local ledger
+.delivery/
+
 # SimpleQA and other datasets are downloaded, not committed (bench/simpleqa.py)
 bench/data/
 state/

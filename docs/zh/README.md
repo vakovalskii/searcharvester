@@ -13,7 +13,7 @@
 仓库根目录文件：
 
 - [`../../README.md`](../../README.md) — 快速上手 (English)
-- [`../../CLAUDE.md`](../../CLAUDE.md) — 面向 AI 助手的说明
+- [`../../AGENTS.md`](../../AGENTS.md) — 面向 AI 助手的说明
 - [`../../CONFIG_SETUP.md`](../../CONFIG_SETUP.md) — 关于 `config.yaml` 的详细说明
 
 其他语言: [English](../en/README.md) · [Русский](../ru/README.md)

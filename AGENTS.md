@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-Заметки для будущего Claude (или нового разработчика). Цель — быстро сориентироваться, не перечитывая всю историю.
+Заметки для будущего агента (Codex, Devin) или нового разработчика. Цель — быстро сориентироваться, не перечитывая всю историю.
 
 ## Что это за проект
 
@@ -32,7 +32,8 @@ Pre-built образ в GHCR: `ghcr.io/vakovalskii/searcharvester:{latest,2.1.0}
 | `simple_tavily_adapter/tests/` | `test_events.py` (normalizer) + `test_research_api.py` (routes, моки) — 12 unit-тестов |
 | `hermes_skills/` | три наших skill'а в `agentskills.io` формате: search, extract, deep-research |
 | `hermes-data/` | **gitignored**, HERMES_HOME: config.yaml, SOUL.md, skills/ |
-| `jobs/` | **gitignored**, workspace каждой research-задачи (report.md, hermes.log, **events.jsonl**) |
+| `jobs/` | **gitignored**, workspace каждой research-задачи (plan.md, report.md, hermes.log, extracts/) |
+| `state/` | **gitignored**, состояние job'ов адаптера (STATE_DIR: job.json, events.jsonl, final_report.md) |
 | `frontend/src/lib/api.ts` | `subscribeToJob()` → EventSource → типизированные `AgentEvent` |
 | `frontend/src/components/LogTimeline.tsx` | Рендер timeline из типизированных событий (без regex) |
 | `bench/` | SimpleQA-20 smoke-бенч и харнесс |
@@ -54,14 +55,14 @@ Pre-built образ в GHCR: `ghcr.io/vakovalskii/searcharvester:{latest,2.1.0}
 - **Один образ**: адаптер `FROM nousresearch/hermes-agent:latest` — hermes CLI лежит в PATH. `entrypoint-adapter.sh` повторяет логику upstream-ного entrypoint'а (HERMES_HOME bootstrap + gosu drop до user `hermes`) и затем `exec uvicorn`. Adapter и Hermes делят один контейнер → нет docker-in-docker, нет docker-socket-proxy.
 - **ACP SDK**: `from acp import Client, connect_to_agent` — библиотека `agent-client-protocol` **уже запечена в hermes venv**, нам её не надо доустанавливать. Используем subclass `Client` с `async session_update()` callback'ом.
 - **Flat Event schema** (`events.py`): `{ts, job_id, agent_id, parent_id, type, payload}`. `type` — union из `spawn|thought|message|tool_call|tool_result|plan|commands|note|done`. Транспорт-агностично — UI любого типа (React, curl -N, Python-клиент) потребляет одинаково. Если завтра уйдём с Hermes на Claude Code SDK, меняется только normalizer, не UI.
-- **events.jsonl** пишется on-the-fly в `jobs/{id}/events.jsonl` — post-mortem доступ без адаптера.
+- **events.jsonl** пишется on-the-fly в `state/{id}/events.jsonl` (STATE_DIR адаптера) — post-mortem доступ без адаптера.
 - **cwd = job workspace**, без `/workspace` bind'а. Агент пишет в `./report.md`. `MANDATORY_SUFFIX` в `orchestrator.py` это говорит; SKILL.md тоже переведён на относительные пути.
-- **LLM-агностик**: `provider: "custom"` в `hermes-data/config.yaml` + `OPENAI_BASE_URL` + `OPENAI_API_KEY` (из `.env.hermes`, загружаемого `docker compose --env-file .env.hermes`). `provider: "vllm"` из доков на рантайме не принимается — используем "custom".
+- **LLM-агностик**: `provider: "custom"` в `hermes-data/config.yaml` + `OPENAI_BASE_URL` + `OPENAI_API_KEY` (из `.env.hermes` рядом с docker-compose.yaml — сервисный `env_file`, gitignored, шаблон `.env.hermes.example`). `provider: "vllm"` из доков на рантайме не принимается — используем "custom".
 
 ## Skills — три штуки
 
 - `searcharvester-search/` — SKILL.md + `scripts/search.py`. Зовёт `/search` через `urllib`, возвращает компактный JSON без лишних полей.
-- `searcharvester-extract/` — SKILL.md + `scripts/extract.py`. Зовёт `/extract` и `/extract/{id}/{page}`, отдаёт markdown + метаданные.
+- `searcharvester-extract/` — SKILL.md + `scripts/extract.py` + `scripts/fragments.py`. Зовёт `/extract`, сохраняет полный markdown в `./extracts/<id>.md`, отдаёт указатель + превью. С `--query "<подвопрос>"` сверху режет сохранённый файл на структурные чанки и BM25-ранжирует их по запросу: агент получает лучшие фрагменты с путём заголовков и номерами строк, эскалация — соседние чанки / `sed -n 'a,bp'` / весь файл (он уже на диске). `fragments.py` работает и отдельно (`--file --query`) — переранжировать сохранённый файл под новый вопрос без повторного обращения к сети.
 - `searcharvester-deep-research/` — **только SKILL.md, без кода**. Методология на ~200 строк: план → gather → gap-check → synthesise → verify. Скилл просто _описывает_ процесс для LLM; реальные tool-вызовы уже есть в первых двух скиллах.
 
 Скиллы синкаются в `hermes-data/skills/` перед спавном. Формат переносимый ([agentskills.io](https://agentskills.io)) — те же скиллы работают в Claude Code, Cursor, OpenCode.
@@ -97,9 +98,9 @@ docker compose exec tavily-adapter /opt/hermes/.venv/bin/python -m pytest -q  # 
 ## Когда пишешь код / документацию
 
 - Доки (README, docs/) — **английский primary**, RU + ZH переводы в `docs/{ru,zh}/`.
-- CLAUDE.md и переписка — на русском.
+- AGENTS.md и переписка — на русском.
 - Не плоди новые markdown-файлы без нужды — проверь `docs/` сначала.
 - Секреты (`secret_key`, `OPENAI_API_KEY`) только в `config.yaml` / `.env.hermes` (оба gitignored), **никогда** в коде.
-- После изменений в `main.py` / `orchestrator.py` / `events.py` / `Dockerfile` / `entrypoint-adapter.sh` — пересобрать образ: `docker compose --env-file .env.hermes up -d --build tavily-adapter`.
-- **`--env-file .env.hermes` критично**: без него `OPENAI_API_KEY`/`OPENAI_BASE_URL` попадают в контейнер пустыми и `hermes acp` падает на первом же LLM-вызове.
+- После изменений в `main.py` / `orchestrator.py` / `events.py` / `Dockerfile` / `entrypoint-adapter.sh` — пересобрать образ: `docker compose up -d --build tavily-adapter`.
+- **`.env.hermes` обязателен, но флаги не нужны**: сервисный `env_file` подхватывает его автоматически, хватает `docker compose up -d`. Файл лежит рядом с docker-compose.yaml (gitignored, шаблон `.env.hermes.example`); без него `OPENAI_API_KEY`/`OPENAI_BASE_URL` попадают в контейнер пустыми и `hermes acp` падает на первом же LLM-вызове.
 - LLM event schema — **контракт с UI**. Если добавляешь новый `type` в `events.py`, обнови `AgentEventType` в `frontend/src/lib/api.ts` + `renderEvent` в `LogTimeline.tsx`.

@@ -192,7 +192,7 @@ sequenceDiagram
 - `adapter.scraper.max_content_length` → `raw_content` 长度上限
 - `adapter.scraper.user_agent` → 抓取时使用的 User-Agent
 
-**未被代码读取（已硬编码）**：`adapter.search.default_engines`、`default_categories`、`default_language`、`safesearch`、`default_max_results`。这些字段在 `config_loader.py` 中作为 property 存在，但未在 `main.py` 中应用。属已知的遗留问题 — 详见 [`../CLAUDE.md`](../CLAUDE.md)。
+**未被代码读取（已硬编码）**：`adapter.search.default_engines`、`default_categories`、`default_language`、`safesearch`、`default_max_results`。这些字段在 `config_loader.py` 中作为 property 存在，但未在 `main.py` 中应用。属已知的遗留问题 — 详见 [`../../AGENTS.md`](../../AGENTS.md)。
 
 ---
 
