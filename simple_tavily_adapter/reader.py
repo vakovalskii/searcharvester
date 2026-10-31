@@ -400,6 +400,7 @@ MIN_TEXT = 300
 HARD_OK_TEXT = 6000  # 4000 let a 4k intro of a 24k article through (calibration 2026-09-28)
 HARD_OK_MAX_LINKS_PER_1K = 6.0
 SPA_VISIBLE_RATIO = 0.05
+SPA_SHELL_MAX_TEXT = 1000  # pages with more text than this are candidates for the judge, not shells (issue #13)
 
 
 def gate(sig: dict) -> tuple[str, str]:
@@ -410,7 +411,7 @@ def gate(sig: dict) -> tuple[str, str]:
         return "reject", "too_short"
     if sig["empty_root"] and sig["text_len"] < HARD_OK_TEXT:
         return "reject", "spa_shell"
-    if sig["visible_ratio"] < SPA_VISIBLE_RATIO and sig["scripts"] > 20 and sig["text_len"] < HARD_OK_TEXT:
+    if sig["visible_ratio"] < SPA_VISIBLE_RATIO and sig["scripts"] > 20 and sig["text_len"] < SPA_SHELL_MAX_TEXT:
         return "reject", "spa_shell"
     if sig["text_len"] >= HARD_OK_TEXT and sig["links_per_1k"] <= HARD_OK_MAX_LINKS_PER_1K:
         return "ok", "long_clean_text"
