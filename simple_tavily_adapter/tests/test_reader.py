@@ -163,6 +163,9 @@ def sig(**over):
     ({"text_len": 120}, "reject", "too_short"),
     ({"empty_root": True, "text_len": 900}, "reject", "spa_shell"),
     ({"visible_ratio": 0.01, "scripts": 60, "text_len": 900}, "reject", "spa_shell"),
+    # issue #13: script-heavy pages with real text go to gray_zone for the judge, not rejected as spa_shell
+    ({"visible_ratio": 0.028, "scripts": 44, "text_len": 2354}, "judge", "gray_zone"),
+    ({"visible_ratio": 0.014, "scripts": 36, "text_len": 3853}, "judge", "gray_zone"),
     ({"text_len": 1800}, "judge", "gray_zone"),
     ({"text_len": 5000}, "judge", "gray_zone"),       # a 4-5k intro of a long article went through at 4000
     ({"links_per_1k": 20.0}, "judge", "gray_zone"),   # long but a link farm: ask
